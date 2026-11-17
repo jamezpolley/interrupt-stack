@@ -26,8 +26,10 @@ function memStorage() {
   const items = new Map();
   let dirty = [];
   let lastSeq = 0;
+  let epoch = null;
   return {
-    load: async () => ({ items: [...items.values()].map((i) => ({ ...i })), dirty: [...dirty], lastSeq }),
+    load: async () => ({ items: [...items.values()].map((i) => ({ ...i })), dirty: [...dirty], lastSeq, epoch }),
+    setEpoch: async (e) => void (epoch = e),
     putItem: async (i) => void items.set(i.id, { ...i }),
     setDirty: async (ids) => void (dirty = [...ids]),
     setLastSeq: async (n) => void (lastSeq = n),
@@ -38,11 +40,13 @@ function memStorage() {
 function world() {
   const server = { current: newServer() };
   const mkClient = (opts = {}) => {
-    const ctl = { online: true, hook: null };
+    const ctl = { online: true, hook: null, intercept: null };
     const storage = opts.storage ?? memStorage();
     const statuses = [];
     const fetch = async (path, init = {}) => {
       if (!ctl.online) throw new TypeError("network down");
+      const forced = ctl.intercept?.(path, init);
+      if (forced) return forced;
       if (ctl.hook && (init.method ?? "GET") === "GET") {
         const h = ctl.hook;
         ctl.hook = null;
@@ -266,3 +270,124 @@ describe("sync core", () => {
     expect(texts(a)).toEqual(["poke"]);
   });
 });
+
+const serverTexts = (w) => w.server.current.store.since(0).items.map((r) => r.text).sort();
+
+describe("server replacement", () => {
+  test("a replaced server still receives items the client already synced, even when the client has unsent items", async () => {
+    const w = world();
+    const a = w.mkClient();
+    await a.sync.start();
+    await a.sync.push("X");
+    await a.sync.push("Y");
+    await a.sync.syncNow();
+    w.server.current = newServer();
+    a.ctl.online = false;
+    await a.sync.push("P");
+    await a.sync.push("Q");
+    a.ctl.online = true;
+    await a.sync.syncNow();
+    await a.sync.syncNow();
+    expect(serverTexts(w)).toEqual(["P", "Q", "X", "Y"]);
+  });
+
+  test("a replaced server refilled by another device past this client's seq still receives this client's items", async () => {
+    const w = world();
+    const a = w.mkClient();
+    const b = w.mkClient();
+    await a.sync.start();
+    await b.sync.start();
+    await a.sync.push("X");
+    await a.sync.push("Y");
+    await a.sync.syncNow();
+    w.server.current = newServer();
+    for (const t of ["b1", "b2", "b3", "b4", "b5"]) await b.sync.push(t);
+    await b.sync.syncNow();
+    await a.sync.syncNow();
+    await a.sync.syncNow();
+    expect(serverTexts(w)).toEqual(["X", "Y", "b1", "b2", "b3", "b4", "b5"]);
+  });
+});
+
+describe("failing requests", () => {
+  const rejectBad = (path, init) =>
+    init?.method === "PUT" && JSON.parse(init.body).text === "bad"
+      ? new Response('{"error":"nope"}', { status: 400, headers: { "content-type": "application/json" } })
+      : null;
+
+  test("one item the server rejects does not block the others or the pull", async () => {
+    const w = world();
+    const a = w.mkClient();
+    const b = w.mkClient();
+    await a.sync.start();
+    await b.sync.start();
+    a.ctl.intercept = rejectBad;
+    await a.sync.push("bad");
+    await a.sync.push("good");
+    await a.sync.syncNow();
+    expect(serverTexts(w)).toEqual(["good"]);
+    expect(a.sync.status()).toEqual({ state: "error", pending: 1 });
+    await b.sync.push("from B");
+    await b.sync.syncNow();
+    await a.sync.syncNow();
+    expect(texts(a)).toContain("from B");
+  });
+
+  test("a rejected item is kept and sent once the server accepts it", async () => {
+    const w = world();
+    const a = w.mkClient();
+    await a.sync.start();
+    a.ctl.intercept = rejectBad;
+    await a.sync.push("bad");
+    await a.sync.syncNow();
+    a.ctl.intercept = null;
+    await a.sync.syncNow();
+    expect(serverTexts(w)).toEqual(["bad"]);
+    expect(a.sync.status()).toEqual({ state: "synced", pending: 0 });
+  });
+
+  test("a server error (5xx) is still reported as offline, not as a rejection", async () => {
+    const w = world();
+    const a = w.mkClient();
+    await a.sync.start();
+    a.ctl.intercept = (path, init) => (init?.method === "PUT" ? new Response("bad gateway", { status: 502 }) : null);
+    await a.sync.push("kept");
+    await a.sync.syncNow();
+    expect(a.sync.status()).toEqual({ state: "offline", pending: 1 });
+  });
+});
+
+describe("local storage failure", () => {
+  test("a push still shows and syncs when the device storage rejects the write", async () => {
+    const w = world();
+    const a = w.mkClient();
+    await a.sync.start();
+    a.storage.putItem = async () => {
+      throw new Error("QuotaExceededError");
+    };
+    const item = await a.sync.push("kept in memory");
+    expect(item?.text).toBe("kept in memory");
+    expect(texts(a)).toEqual(["kept in memory"]);
+    await a.sync.syncNow();
+    expect(serverTexts(w)).toEqual(["kept in memory"]);
+    expect(a.sync.status().storageFailed).toBe(true);
+    expect(a.sync.status().state).toBe("synced");
+  });
+
+  test("start still works, with an empty stack, when the device storage cannot be read", async () => {
+    const w = world();
+    const storage = memStorage();
+    storage.load = async () => {
+      throw new Error("InvalidStateError");
+    };
+    const a = w.mkClient({ storage });
+    await a.sync.start();
+    expect(a.sync.status().storageFailed).toBe(true);
+    await a.sync.push("after a failed load");
+    await a.sync.syncNow();
+    expect(texts(a)).toEqual(["after a failed load"]);
+    expect(serverTexts(w)).toEqual(["after a failed load"]);
+    expect(a.sync.status().storageFailed).toBeUndefined(); // storage works again, so the flag cleared
+  });
+});
+

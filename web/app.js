@@ -1,5 +1,6 @@
 import { createSync } from "./sync.js";
 import { openStorage } from "./idb.js";
+import { createEventStream } from "./events.js";
 
 const $ = (id) => document.getElementById(id);
 const UNDO_MS = 15000;
@@ -24,11 +25,25 @@ function showNote(text) {
   n.hidden = !text;
 }
 
-function renderStatus({ state, pending }) {
+const STORAGE_NOTE = "This device could not save your changes locally. Keep this page open until they sync.";
+let storageNoteShown = false;
+
+function renderStatus({ state, pending, storageFailed }) {
   const label =
-    state === "synced" ? "Synced" : state === "syncing" ? "Syncing" : pending ? `Offline, ${pending} unsent` : "Offline";
+    state === "synced"
+      ? "Synced"
+      : state === "syncing"
+        ? "Syncing"
+        : state === "error"
+          ? `Sync problem, ${pending} unsent`
+          : pending
+            ? `Offline, ${pending} unsent`
+            : "Offline";
   $("status").textContent = label;
-  $("dot").className = "dot" + (state === "synced" ? " ok" : state === "offline" ? " warn" : "");
+  $("dot").className = "dot" + (state === "synced" ? " ok" : state === "offline" || state === "error" ? " warn" : "");
+  if (storageFailed && !storageNoteShown) showNote(STORAGE_NOTE);
+  if (!storageFailed && storageNoteShown) showNote("");
+  storageNoteShown = !!storageFailed;
 }
 
 function render() {
@@ -143,7 +158,8 @@ async function init() {
     const text = inp.value.trim();
     if (!text) return;
     inp.value = "";
-    await sync.push(text);
+    const item = await sync.push(text);
+    if (!item) inp.value = text;
     inp.focus();
   });
   $("undo-btn").addEventListener("click", undo);
@@ -153,19 +169,14 @@ async function init() {
 
   const syncNow = () => sync.syncNow().catch(() => {});
 
-  // EventSource reconnects by itself after drops, but on iOS a stream can look open after the app resumes
-  // from the background while being dead, so it is recreated whenever the page becomes visible.
-  let events;
-  const connectEvents = () => {
-    events?.close();
-    events = new EventSource("/api/events");
-    events.addEventListener("seq", syncNow);
-  };
-  connectEvents();
+  // The stream reconnects itself (events.js). On iOS a stream can also look open after the app resumes from
+  // the background while being dead, so it is recreated whenever the page becomes visible.
+  const events = createEventStream({ url: "/api/events", onSeq: syncNow });
+  events.connect();
 
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "visible") return;
-    connectEvents();
+    events.connect();
     syncNow();
   });
   addEventListener("online", syncNow);

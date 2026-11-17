@@ -153,7 +153,7 @@ export function createApp(store: Store, opts: { webDir: string }) {
     if (pathname === "/api/events" && req.method === "GET") return events();
     if (pathname === "/api/items" && req.method === "GET") {
       const n = Number(url.searchParams.get("since"));
-      return json(store.since(Number.isSafeInteger(n) && n > 0 ? n : 0));
+      return json({ ...store.since(Number.isSafeInteger(n) && n > 0 ? n : 0), epoch: store.epoch });
     }
     const m = pathname.match(/^\/api\/items\/([^/]+)$/);
     if (m && req.method === "PUT") return putItem(decodeURIComponent(m[1]), req);

@@ -38,7 +38,13 @@ describe("api", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ id: "s-aaaa", text: "hello", ts: 7, removed: false, seq: 1 });
     const list = await (await get("/api/items?since=0")).json();
-    expect(list).toEqual({ seq: 1, items: [{ id: "s-aaaa", text: "hello", ts: 7, removed: false, seq: 1 }] });
+    expect(list).toEqual({ seq: 1, epoch: store.epoch, items: [{ id: "s-aaaa", text: "hello", ts: 7, removed: false, seq: 1 }] });
+  });
+
+  test("GET /api/items carries the database epoch as a string", async () => {
+    const body = await (await get("/api/items")).json();
+    expect(typeof body.epoch).toBe("string");
+    expect(body.epoch.length).toBeGreaterThan(8);
   });
 
   test("PUT twice is idempotent", async () => {
@@ -71,7 +77,7 @@ describe("api", () => {
 
   test("GET since beyond current seq returns empty items and the current seq", async () => {
     await put("s-aaaa", item());
-    expect(await (await get("/api/items?since=99")).json()).toEqual({ seq: 1, items: [] });
+    expect(await (await get("/api/items?since=99")).json()).toEqual({ seq: 1, epoch: store.epoch, items: [] });
   });
 
   test("GET with invalid since is treated as 0", async () => {

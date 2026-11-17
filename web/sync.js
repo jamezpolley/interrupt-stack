@@ -2,25 +2,43 @@
 //
 // Items are replaced, never mutated, so object identity tells us whether an item changed while a request was in flight.
 
+// Client errors that will not fix themselves by retrying the same request straight away.
+const permanentlyRejected = (status) => status >= 400 && status < 500 && status !== 408 && status !== 429;
+
 export function createSync({ storage, fetch, now = () => Date.now(), onChange = () => {}, onStatus = () => {} }) {
   const items = new Map(); // id -> {id, text, ts, removed, seq}
   const dirty = new Set(); // ids with changes the server has not acknowledged
   let lastSeq = 0;
+  let epoch = null; // identifies the server database we last synced with
   let state = "syncing";
+  let storageFailed = false;
   let running = null;
   let rerun = false;
 
-  const status = () => ({ state, pending: dirty.size });
+  const status = () => ({ state, pending: dirty.size, ...(storageFailed ? { storageFailed: true } : {}) });
   const setState = (s) => {
     state = s;
     onStatus(status());
   };
 
+  // Device storage can fail (quota, eviction, a closed database). The in-memory copy keeps working and
+  // keeps syncing; the failure is reported through status() instead of being mistaken for a network error.
+  // The flag is sticky: a later successful write must not hide an earlier failure. Each new user action
+  // starts it afresh, so it clears once storage works again.
+  async function safe(fn) {
+    try {
+      await fn();
+    } catch {
+      storageFailed = true;
+    }
+  }
+
   async function setItem(item) {
+    storageFailed = false;
     items.set(item.id, item);
     dirty.add(item.id);
-    await storage.putItem(item);
-    await storage.setDirty([...dirty]);
+    await safe(() => storage.putItem(item));
+    await safe(() => storage.setDirty([...dirty]));
     onChange();
     onStatus(status());
     syncNow().catch(() => {});
@@ -29,6 +47,7 @@ export function createSync({ storage, fetch, now = () => Date.now(), onChange = 
   async function pass() {
     setState("syncing");
     try {
+      const rejected = new Set();
       for (const id of [...dirty]) {
         const sent = items.get(id);
         const res = await fetch(`/api/items/${encodeURIComponent(id)}`, {
@@ -36,13 +55,17 @@ export function createSync({ storage, fetch, now = () => Date.now(), onChange = 
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ text: sent.text, ts: sent.ts, removed: sent.removed }),
         });
+        if (permanentlyRejected(res.status)) {
+          rejected.add(id); // keep it, but do not let it block the rest of the queue
+          continue;
+        }
         if (!res.ok) throw new Error(`PUT ${id} failed: ${res.status}`);
         const saved = await res.json();
         if (items.get(id) === sent) {
           items.set(id, saved);
           dirty.delete(id);
-          await storage.putItem(saved);
-          await storage.setDirty([...dirty]);
+          await safe(() => storage.putItem(saved));
+          await safe(() => storage.setDirty([...dirty]));
         }
       }
 
@@ -50,26 +73,35 @@ export function createSync({ storage, fetch, now = () => Date.now(), onChange = 
       if (!res.ok) throw new Error(`GET items failed: ${res.status}`);
       const data = await res.json();
 
-      if (data.seq < lastSeq) {
-        // The server's numbering went backwards: its database was replaced. Start over and re-send everything.
+      const replaced = data.seq < lastSeq || (epoch && data.epoch && data.epoch !== epoch);
+      if (replaced) {
+        // The server's database was replaced (its epoch changed, or its numbering went backwards).
+        // Start over and re-send everything this client holds.
         lastSeq = 0;
-        await storage.setLastSeq(0);
+        epoch = data.epoch ?? null;
+        await safe(() => storage.setLastSeq(0));
+        await safe(() => storage.setEpoch?.(epoch));
         for (const id of items.keys()) dirty.add(id);
-        await storage.setDirty([...dirty]);
+        await safe(() => storage.setDirty([...dirty]));
         rerun = true;
         return;
+      }
+      if (data.epoch && data.epoch !== epoch) {
+        epoch = data.epoch;
+        await safe(() => storage.setEpoch?.(epoch));
       }
 
       for (const row of data.items) {
         if (dirty.has(row.id)) continue;
         items.set(row.id, row);
-        await storage.putItem(row);
+        await safe(() => storage.putItem(row));
       }
       lastSeq = data.seq;
-      await storage.setLastSeq(lastSeq);
+      await safe(() => storage.setLastSeq(lastSeq));
       onChange();
-      setState(dirty.size ? "syncing" : "synced");
-      if (dirty.size) rerun = true;
+      const changedMeanwhile = [...dirty].some((id) => !rejected.has(id));
+      setState(rejected.size ? "error" : changedMeanwhile ? "syncing" : "synced");
+      if (changedMeanwhile) rerun = true;
     } catch {
       setState("offline");
     }
@@ -97,10 +129,17 @@ export function createSync({ storage, fetch, now = () => Date.now(), onChange = 
 
   return {
     async start() {
-      const saved = await storage.load();
+      let saved;
+      try {
+        saved = await storage.load();
+      } catch {
+        storageFailed = true;
+        saved = { items: [], dirty: [], lastSeq: 0, epoch: null };
+      }
       for (const it of saved.items) items.set(it.id, it);
       for (const id of saved.dirty) if (items.has(id)) dirty.add(id);
       lastSeq = saved.lastSeq;
+      epoch = saved.epoch ?? null;
       onChange();
       await syncNow();
     },

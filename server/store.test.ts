@@ -127,4 +127,21 @@ describe("store", () => {
     s.upsert("s-bbbb", input("b", 2, true));
     expect(s.counts()).toEqual({ live: 1, removed: 2 });
   });
+
+  test("epoch is stable for one database and differs between databases", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ist-epoch-"));
+    try {
+      const path = join(dir, "stack.db");
+      const a = openStore(path);
+      const epoch = a.epoch;
+      a.close();
+      const b = openStore(path);
+      expect(b.epoch).toBe(epoch);
+      b.close();
+      expect(epoch).toMatch(/^[0-9a-f-]{16,}$/);
+      expect(mem().epoch).not.toBe(epoch);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

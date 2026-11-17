@@ -14,6 +14,8 @@ export const MAX_TEXT = 200;
 const ID_RE = /^s-[a-z0-9]{4,40}$/;
 
 export interface Store {
+  /** Identifies this database. A client that sees it change knows the server's data was replaced. */
+  readonly epoch: string;
   upsert(id: string, input: ItemInput): Item;
   since(seq: number): { seq: number; items: Item[] };
   counts(): { live: number; removed: number };
@@ -30,6 +32,10 @@ export function openStore(path: string): Store {
     "CREATE TABLE IF NOT EXISTS items (id TEXT PRIMARY KEY, text TEXT NOT NULL, ts INTEGER NOT NULL, removed INTEGER NOT NULL, seq INTEGER NOT NULL)",
   );
   db.run("CREATE INDEX IF NOT EXISTS items_seq ON items (seq)");
+  db.run("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+  const savedEpoch = db.prepare("SELECT value FROM meta WHERE key = 'epoch'").get() as { value: string } | null;
+  const epoch = savedEpoch?.value ?? crypto.randomUUID();
+  if (!savedEpoch) db.prepare("INSERT INTO meta (key, value) VALUES ('epoch', ?)").run(epoch);
 
   const write = db.prepare(
     `INSERT INTO items (id, text, ts, removed, seq)
@@ -49,6 +55,7 @@ export function openStore(path: string): Store {
   );
 
   return {
+    epoch,
     upsert(id, input) {
       if (typeof id !== "string" || !ID_RE.test(id)) throw new ValidationError("invalid id");
       const text = typeof input.text === "string" ? input.text.trim() : "";

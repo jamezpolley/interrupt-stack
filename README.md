@@ -32,7 +32,7 @@ Settings below come from Dockhand's manual (https://dockhand.pro/manual, read 20
 - Compose file path: `compose.yaml` (the default is `docker-compose.yml`, so set it).
 - Turn on **Build images on deploy**. It is off by default and adds `--build`; the image is built from this repo's `Dockerfile`.
 - Leave **Re-pull images** off.
-- Nothing needs configuring in the stack's environment: the compose file has no variables. Attach your proxy or agent to the `interrupt-stack` network (see above).
+- The only stack variables are the two optional Pangolin ones (see Pangolin labels below). Attach your proxy or agent to the `interrupt-stack` network (see above).
 - On a remote host running Hawser from its standard systemd unit, a build needs the unit's `DOCKER_CONFIG` and `RuntimeDirectory` lines (current Hawser installers add them; older installs do not). Without them the build fails with `mkdir /root/.docker: read-only file system`.
 - Dockhand only redeploys when the git commit changed (a manual Deploy always redeploys), so a new commit is what triggers a rebuild.
 
@@ -53,8 +53,11 @@ Enter the values as plain text, with nothing after them. In Dockhand's variables
 
 - Each stack item is its own record (`id`, `text`, `ts`, `removed`, `seq`), so two devices pushing at once never overwrite each other. Removing an item sets a flag, so the removal reaches your other devices; undo clears it.
 - The browser keeps a local copy in IndexedDB and a list of unsent changes. Every action applies locally first, then syncs. The server announces new changes over a server-sent event stream so open devices update live.
-- If the server's database is ever replaced, clients notice the sequence number went backwards and re-send what they hold.
+- If the server's database is ever replaced, clients notice (each database has an epoch ID, and sequence numbers going backwards also counts) and re-send everything they hold.
+- The live-update stream reconnects with a backoff if a proxy answers a reconnect with an error, such as a 502 during a restart.
 - Order comes from each device's clock, as in the original prototype. A badly wrong clock can misorder items.
+- Conflicts resolve by arrival: the last change the server receives for an item wins, not the change made last. If a device was offline when it removed an item and reconnects after another device restored it, the older removal wins. Both devices then show the same thing.
+- A change the server refuses (a 4xx response) stays on the device and shows as "Sync problem" without blocking other changes. If the device's own storage fails, it says so and keeps working from memory.
 
 API (JSON): `GET /api/items?since=<seq>`, `PUT /api/items/<id>`, `GET /api/events` (event stream), `GET /healthz`.
 

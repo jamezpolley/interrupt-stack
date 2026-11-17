@@ -25,15 +25,17 @@ export async function openStorage() {
 
   return {
     async load() {
-      const [items, dirty, lastSeq] = await Promise.all([
+      const [items, dirty, lastSeq, epoch] = await Promise.all([
         request(store("items").getAll()),
         getMeta("dirty", []),
         getMeta("lastSeq", 0),
+        getMeta("epoch", null),
       ]);
-      return { items, dirty, lastSeq };
+      return { items, dirty, lastSeq, epoch };
     },
     putItem: (item) => request(store("items", "readwrite").put(item)),
     setDirty: (ids) => putMeta("dirty", ids),
     setLastSeq: (n) => putMeta("lastSeq", n),
+    setEpoch: (e) => putMeta("epoch", e),
   };
 }
