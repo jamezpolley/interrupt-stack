@@ -1,0 +1,268 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createApp } from "../server/app";
+import { openStore } from "../server/store";
+import { createSync } from "./sync.js";
+
+const cleanup = [];
+afterEach(() => {
+  while (cleanup.length) cleanup.pop()();
+});
+
+function newServer() {
+  const store = openStore(":memory:");
+  const dir = mkdtempSync(join(tmpdir(), "ist-sync-"));
+  writeFileSync(join(dir, "index.html"), "x");
+  cleanup.push(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  return { store, app: createApp(store, { webDir: dir }) };
+}
+
+function memStorage() {
+  const items = new Map();
+  let dirty = [];
+  let lastSeq = 0;
+  return {
+    load: async () => ({ items: [...items.values()].map((i) => ({ ...i })), dirty: [...dirty], lastSeq }),
+    putItem: async (i) => void items.set(i.id, { ...i }),
+    setDirty: async (ids) => void (dirty = [...ids]),
+    setLastSeq: async (n) => void (lastSeq = n),
+  };
+}
+
+// One shared "network": clients call server.current.app; `down` clients throw like an offline device.
+function world() {
+  const server = { current: newServer() };
+  const mkClient = (opts = {}) => {
+    const ctl = { online: true, hook: null };
+    const storage = opts.storage ?? memStorage();
+    const statuses = [];
+    const fetch = async (path, init = {}) => {
+      if (!ctl.online) throw new TypeError("network down");
+      if (ctl.hook && (init.method ?? "GET") === "GET") {
+        const h = ctl.hook;
+        ctl.hook = null;
+        await h();
+      }
+      return server.current.app.fetch(new Request("http://t" + path, init));
+    };
+    const sync = createSync({ storage, fetch, now: opts.now, onStatus: (s) => statuses.push(s) });
+    return { sync, ctl, storage, statuses };
+  };
+  return { server, mkClient };
+}
+
+const texts = (c) => c.sync.stack().map((i) => i.text);
+
+describe("sync core", () => {
+  test("push shows on stack immediately", async () => {
+    const w = world();
+    const a = w.mkClient();
+    a.ctl.online = false;
+    await a.sync.start();
+    const p = a.sync.push("first");
+    expect(texts(a)).toEqual(["first"]);
+    await p;
+  });
+
+  test("push syncs to the server", async () => {
+    const w = world();
+    const a = w.mkClient();
+    await a.sync.start();
+    await a.sync.push("hello");
+    await a.sync.syncNow();
+    const rows = w.server.current.store.since(0).items;
+    expect(rows.map((r) => r.text)).toEqual(["hello"]);
+    expect(a.sync.status()).toEqual({ state: "synced", pending: 0 });
+  });
+
+  test("two clients converge after push on A and syncNow on B", async () => {
+    const w = world();
+    const a = w.mkClient();
+    const b = w.mkClient();
+    await a.sync.start();
+    await b.sync.start();
+    await a.sync.push("from A");
+    await a.sync.syncNow();
+    await b.sync.syncNow();
+    expect(texts(b)).toEqual(["from A"]);
+  });
+
+  test("remove on A disappears from B", async () => {
+    const w = world();
+    const a = w.mkClient();
+    const b = w.mkClient();
+    await a.sync.start();
+    await b.sync.start();
+    const item = await a.sync.push("gone soon");
+    await a.sync.syncNow();
+    await b.sync.syncNow();
+    await a.sync.remove(item.id);
+    await a.sync.syncNow();
+    await b.sync.syncNow();
+    expect(texts(b)).toEqual([]);
+  });
+
+  test("restore after remove reappears on both", async () => {
+    const w = world();
+    const a = w.mkClient();
+    const b = w.mkClient();
+    await a.sync.start();
+    await b.sync.start();
+    const item = await a.sync.push("back again");
+    await a.sync.remove(item.id);
+    await a.sync.restore(item.id);
+    await a.sync.syncNow();
+    await b.sync.syncNow();
+    expect(texts(a)).toEqual(["back again"]);
+    expect(texts(b)).toEqual(["back again"]);
+  });
+
+  test("concurrent remove on A and restore on B converge to the same state on both after syncing", async () => {
+    const w = world();
+    const a = w.mkClient();
+    const b = w.mkClient();
+    await a.sync.start();
+    await b.sync.start();
+    const item = await a.sync.push("contested");
+    await a.sync.syncNow();
+    await b.sync.syncNow();
+    a.ctl.online = false;
+    b.ctl.online = false;
+    await a.sync.remove(item.id);
+    await b.sync.remove(item.id);
+    await b.sync.restore(item.id);
+    a.ctl.online = true;
+    b.ctl.online = true;
+    await a.sync.syncNow();
+    await b.sync.syncNow();
+    await a.sync.syncNow();
+    await b.sync.syncNow();
+    expect(texts(a)).toEqual(texts(b));
+    expect(texts(a)).toEqual(["contested"]); // B's write reached the server last
+  });
+
+  test("push then remove while offline sends one removed row after reconnect", async () => {
+    const w = world();
+    const a = w.mkClient();
+    const b = w.mkClient();
+    await a.sync.start();
+    await b.sync.start();
+    a.ctl.online = false;
+    const item = await a.sync.push("blink");
+    await a.sync.remove(item.id);
+    expect(a.sync.status()).toEqual({ state: "offline", pending: 1 });
+    a.ctl.online = true;
+    await a.sync.syncNow();
+    await b.sync.syncNow();
+    const rows = w.server.current.store.since(0).items;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].removed).toBe(true);
+    expect(texts(a)).toEqual([]);
+    expect(texts(b)).toEqual([]);
+  });
+
+  test("offline push survives a new createSync from the same storage", async () => {
+    const w = world();
+    const storage = memStorage();
+    const a1 = w.mkClient({ storage });
+    a1.ctl.online = false;
+    await a1.sync.start();
+    await a1.sync.push("kept offline");
+    const a2 = w.mkClient({ storage });
+    await a2.sync.start();
+    expect(texts(a2)).toEqual(["kept offline"]);
+    await a2.sync.syncNow();
+    expect(w.server.current.store.since(0).items.map((r) => r.text)).toEqual(["kept offline"]);
+  });
+
+  test("failed PUT keeps the item dirty and status offline", async () => {
+    const w = world();
+    const a = w.mkClient();
+    await a.sync.start();
+    a.ctl.online = false;
+    await a.sync.push("pending one");
+    await a.sync.syncNow();
+    expect(a.sync.status()).toEqual({ state: "offline", pending: 1 });
+    expect((await a.storage.load()).dirty).toHaveLength(1);
+  });
+
+  test("status pending equals dirty count", async () => {
+    const w = world();
+    const a = w.mkClient();
+    await a.sync.start();
+    a.ctl.online = false;
+    await a.sync.push("one");
+    await a.sync.push("two");
+    await a.sync.syncNow();
+    expect(a.sync.status().pending).toBe(2);
+    a.ctl.online = true;
+    await a.sync.syncNow();
+    expect(a.sync.status()).toEqual({ state: "synced", pending: 0 });
+  });
+
+  test("server database replaced (new store) triggers full re-send and both clients converge", async () => {
+    const w = world();
+    const a = w.mkClient();
+    const b = w.mkClient();
+    await a.sync.start();
+    await b.sync.start();
+    await a.sync.push("survivor");
+    await a.sync.syncNow();
+    await b.sync.syncNow();
+    w.server.current = newServer(); // empty database, seq back to 0
+    await b.sync.syncNow();
+    await a.sync.syncNow();
+    expect(w.server.current.store.since(0).items.map((r) => r.text)).toEqual(["survivor"]);
+    expect(texts(a)).toEqual(["survivor"]);
+    expect(texts(b)).toEqual(["survivor"]);
+  });
+
+  test("whitespace push returns null and changes nothing", async () => {
+    const w = world();
+    const a = w.mkClient();
+    await a.sync.start();
+    expect(await a.sync.push("   ")).toBeNull();
+    expect(a.sync.stack()).toEqual([]);
+    expect(a.sync.status().pending).toBe(0);
+  });
+
+  test("stack orders by ts newest first", async () => {
+    const w = world();
+    let t = 1000;
+    const a = w.mkClient({ now: () => t++ });
+    await a.sync.start();
+    await a.sync.push("one");
+    await a.sync.push("two");
+    await a.sync.push("three");
+    expect(texts(a)).toEqual(["three", "two", "one"]);
+  });
+
+  test("pulled row does not overwrite a locally dirty item", async () => {
+    const w = world();
+    const a = w.mkClient();
+    const b = w.mkClient();
+    await a.sync.start();
+    await b.sync.start();
+    const item = await a.sync.push("race");
+    await a.sync.syncNow();
+    await b.sync.syncNow();
+    // While B is mid-sync (its pull is in flight), B removes the item locally.
+    b.ctl.hook = async () => {
+      await b.sync.remove(item.id);
+    };
+    await a.sync.push("poke"); // gives B's next pull something to fetch
+    await a.sync.syncNow();
+    await b.sync.syncNow();
+    await b.sync.syncNow();
+    await a.sync.syncNow();
+    expect(texts(b)).toEqual(["poke"]);
+    const row = w.server.current.store.since(0).items.find((r) => r.id === item.id);
+    expect(row.removed).toBe(true);
+    expect(texts(a)).toEqual(["poke"]);
+  });
+});
