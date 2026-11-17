@@ -4,3 +4,4 @@ docs
 prototype
 node_modules
 *.db*
+.docker
