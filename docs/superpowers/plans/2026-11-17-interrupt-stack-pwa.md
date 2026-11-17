@@ -18,7 +18,7 @@
 - Last write the server receives for an `id` wins. `PUT` is idempotent.
 - API: `GET /api/items?since=<seq>`, `PUT /api/items/<id>`, `GET /api/events` (SSE), `GET /healthz`. All JSON except the stream.
 - The server has no authentication and does no TLS; docs say so. Compose publishes `${BIND:-127.0.0.1}:${PORT:-8080}:8080` and mounts a named volume at `/data`.
-- James deploys it with Dockhand pointed at this git repo. `compose.yaml` sits at the repo root, builds from the repo with `build: .`, uses no host paths and no files outside the repo, and takes all settings (`BIND`, `PORT`) from environment variables with defaults, so it runs unchanged when a git-based stack deployment builds it.
+- James deploys it with Dockhand pointed at this git repo, building on deploy. `compose.yaml` sits at the repo root, builds from the repo with `build: .` (no `image:` line unless Task 8 is done), uses no host paths and no files outside the repo, and takes all settings (`BIND`, `PORT`) from environment variables with defaults, so it runs unchanged when a git-based stack deployment builds it.
 - The service worker caches the app shell only and never caches `/api/`.
 - Undo window after any removal is 15 seconds. Text is always rendered with `textContent`.
 - Container runs as a non-root user and has a health check on `/healthz`.
@@ -122,7 +122,7 @@ Behaviour: every action updates local items and the dirty set via storage first,
 - Create: `Dockerfile`, `compose.yaml`, `.dockerignore`
 - Modify: `README.md`
 
-Dockerfile: Bun base image pinned to a major version, copies `server/` and `web/` only (tests excluded), creates `/data` owned by the non-root `bun` user, `USER bun`, `EXPOSE 8080`, `HEALTHCHECK` calling `/healthz` with `bun -e`, `CMD ["bun", "server/main.ts"]`. `compose.yaml` has one service with both `build: .` and `image: ghcr.io/jamezpolley/interrupt-stack:latest` (so a deployer that builds uses the Dockerfile and one that only pulls uses the published image from Task 8), `restart: unless-stopped`, the named volume and the port mapping from Global Constraints. `README.md` gets run instructions, a "Deploying from git (Dockhand)" section that says to point the stack at `compose.yaml` and set `BIND` and `PORT` as environment variables there, the HTTPS-required note, the no-auth warning, and the iPhone and iPad install steps. Before writing that section, check Dockhand's documentation for how it deploys compose stacks from a git repo (compose path, build support, environment variables) and write only what it confirms; note anything unconfirmed in the README as unverified.
+Dockerfile: Bun base image pinned to a major version, copies `server/` and `web/` only (tests excluded), creates `/data` owned by the non-root `bun` user, `USER bun`, `EXPOSE 8080`, `HEALTHCHECK` calling `/healthz` with `bun -e`, `CMD ["bun", "server/main.ts"]`. `compose.yaml` has one service with `build: .` and no `image:` line (an `image:` pointing at a registry would make "re-pull" deployers try to pull before the image exists; Task 8 adds it only if needed), `restart: unless-stopped`, the named volume and the port mapping from Global Constraints. `README.md` gets run instructions, a "Deploying from git (Dockhand)" section that says to point the stack at `compose.yaml` and set `BIND` and `PORT` as environment variables there, the HTTPS-required note, the no-auth warning, and the iPhone and iPad install steps. The Dockhand section records what its manual (https://dockhand.pro/manual, read 2026-11-17) says: set the compose file path to `compose.yaml` (the default is `docker-compose.yml`), turn on "Build images on deploy" (off by default; adds `--build`), leave "Re-pull images" off, and supply `BIND` and `PORT` as environment overrides (`${VAR:-default}` is supported). Mark as unverified: that `compose.yaml` at the repo root is accepted, and whether webhook redeploys apply the build option. Dockhand only redeploys when the git commit changed, so a new commit is what triggers a rebuild.
 
 - [ ] **Step 1:** Write the files.
 - [ ] **Step 2:** Run `docker compose up -d --build`, wait for the container to report healthy, and `curl -s localhost:8080/healthz` prints `ok`.
@@ -140,11 +140,13 @@ Write the checklist James runs on real devices, since iOS cannot be tested here:
 - [ ] **Step 1:** Research and write the checklist.
 - [ ] **Step 2:** Commit and push.
 
-### Task 8: Image publishing
+### Task 8 (optional, last): Image publishing
+
+Do this only if Dockhand turns out not to build from the repo, or James asks for it. A build-on-push race is possible here: Dockhand may sync before the new image is published, so a puller could get the previous `latest`.
 
 **Files:**
 - Create: `.github/workflows/image.yml`
-- Modify: `README.md`
+- Modify: `README.md`, `compose.yaml` (add `image: ghcr.io/jamezpolley/interrupt-stack:latest` beside `build: .`)
 
 On every push to `main`, the workflow runs `bun test`, then builds the Dockerfile and pushes `ghcr.io/jamezpolley/interrupt-stack` tagged `latest` and with the commit SHA, authenticating with `GITHUB_TOKEN` (permissions `contents: read`, `packages: write`). Use official `docker/login-action`, `docker/setup-buildx-action` and `docker/build-push-action`, pinned to major versions. Build for `linux/amd64` only unless the target host is arm; ask before adding more. The README notes that the first published package may be private and must be set to public in the package settings (or Dockhand given a registry credential), and that a git-deploying tool that cannot build should use the `image:` reference.
 
