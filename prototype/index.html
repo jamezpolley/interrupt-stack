@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Interrupt Stack</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* Layout: one narrow column. Push box on top, the current task as a large card, the rest of the stack underneath, deepest last. */
+:root{
+  --bg:#f3f4f1;
+  --surface:#ffffff;
+  --ink:#1b2320;
+  --muted:#5d6a65;
+  --line:#d8ddd8;
+  --accent:#1c6b58;
+  --accent-ink:#ffffff;
+  --warn:#a8501a;
+  --font-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --font-mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Consolas,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#121715;
+    --surface:#1b2320;
+    --ink:#e8ede9;
+    --muted:#9aa8a2;
+    --line:#2f3a36;
+    --accent:#4fb89c;
+    --accent-ink:#0b1512;
+    --warn:#e39a62;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#121715;
+  --surface:#1b2320;
+  --ink:#e8ede9;
+  --muted:#9aa8a2;
+  --line:#2f3a36;
+  --accent:#4fb89c;
+  --accent-ink:#0b1512;
+  --warn:#e39a62;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%}
+body{
+  background:var(--bg);
+  color:var(--ink);
+  font-family:var(--font-body);
+  font-size:16px;
+  line-height:1.45;
+}
+main{max-width:640px;margin:0 auto;padding:20px 16px 64px;display:flex;flex-direction:column;gap:20px}
+header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+h1{margin:0;font-size:1.25rem;font-weight:600;text-wrap:balance}
+.meta{font-family:var(--font-mono);font-size:.8125rem;color:var(--muted);display:flex;gap:12px;align-items:center}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--muted);display:inline-block;margin-right:6px}
+.dot.ok{background:var(--accent)}
+.dot.warn{background:var(--warn)}
+form{display:flex;gap:8px}
+input[type=text]{
+  flex:1;min-width:0;
+  font:inherit;color:var(--ink);background:var(--surface);
+  border:1px solid var(--line);border-radius:8px;padding:12px 14px;
+}
+input[type=text]::placeholder{color:var(--muted)}
+button{
+  font:inherit;font-weight:500;cursor:pointer;border-radius:8px;
+  border:1px solid var(--line);background:var(--surface);color:var(--ink);
+  padding:12px 16px;min-height:44px;
+}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+button:disabled{opacity:.5;cursor:default}
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.now{
+  background:var(--surface);border:1px solid var(--line);border-left:6px solid var(--accent);
+  border-radius:10px;padding:18px 18px 16px;display:flex;flex-direction:column;gap:14px;
+}
+.label{font-family:var(--font-mono);font-size:.75rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.now-text{font-size:1.5rem;font-weight:600;line-height:1.25;overflow-wrap:anywhere;text-wrap:balance}
+.now-foot{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.age{font-family:var(--font-mono);font-size:.8125rem;color:var(--muted)}
+.empty{
+  border:1px dashed var(--line);border-radius:10px;padding:24px 18px;color:var(--muted);text-align:center;
+}
+.under{display:flex;flex-direction:column;gap:8px}
+ol{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+li{
+  display:flex;align-items:center;gap:12px;
+  background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:10px 12px;
+}
+.depth{font-family:var(--font-mono);font-size:.8125rem;color:var(--muted);min-width:2ch;text-align:right;font-variant-numeric:tabular-nums}
+.item-text{flex:1;min-width:0;overflow-wrap:anywhere}
+.item-age{font-family:var(--font-mono);font-size:.75rem;color:var(--muted);white-space:nowrap}
+.drop{min-height:36px;padding:4px 10px;font-size:.8125rem;color:var(--muted)}
+.toast{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  border:1px solid var(--line);background:var(--surface);border-radius:8px;padding:8px 8px 8px 14px;
+}
+.toast span{overflow-wrap:anywhere;min-width:0}
+.note{font-size:.875rem;color:var(--warn)}
+[hidden]{display:none!important}
+@media (prefers-reduced-motion:no-preference){
+  .now{transition:border-color .2s}
+}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Interrupt stack</h1>
+    <div class="meta">
+      <span id="depth">0 deep</span>
+      <span><span id="dot" class="dot"></span><span id="status">Connecting</span></span>
+    </div>
+  </header>
+
+  <form id="push-form" autocomplete="off">
+    <input type="text" id="push-input" maxlength="200" placeholder="What are you starting now?" aria-label="New task to push onto the stack">
+    <button type="submit" class="primary" id="push-btn">Push</button>
+  </form>
+
+  <p class="note" id="note" hidden></p>
+
+  <section id="now-wrap" aria-live="polite"></section>
+
+  <div class="toast" id="toast" hidden>
+    <span id="toast-text"></span>
+    <button type="button" id="undo-btn">Undo</button>
+  </div>
+
+  <section class="under" id="under-wrap" hidden>
+    <div class="label">Underneath, most recent first</div>
+    <ol id="under"></ol>
+  </section>
+</main>
+
+<script>
+(function(){
+  var $ = function(id){ return document.getElementById(id); };
+  var items = [];          // newest first
+  var col = null;          // collection ref when synced
+  var lastPopped = null;
+  var undoTimer = null;
+  var loadTimer = null;
+  var mode = "connecting"; // connecting | synced | local
+
+  function ago(ts){
+    var s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+    if (s < 60) return "just now";
+    var m = Math.round(s / 60);
+    if (m < 60) return m + " min ago";
+    var h = Math.round(m / 60);
+    if (h < 24) return h + " h ago";
+    return Math.round(h / 24) + " d ago";
+  }
+
+  function setStatus(kind, text){
+    mode = kind;
+    $("status").textContent = text;
+    $("dot").className = "dot" + (kind === "synced" ? " ok" : kind === "local" ? " warn" : "");
+  }
+
+  function showNote(text){
+    var n = $("note");
+    n.textContent = text || "";
+    n.hidden = !text;
+  }
+
+  function render(){
+    $("depth").textContent = items.length + " deep";
+    var wrap = $("now-wrap");
+    wrap.textContent = "";
+    if (!items.length){
+      var e = document.createElement("div");
+      e.className = "empty";
+      e.textContent = "The stack is empty. Nothing is waiting for you.";
+      wrap.appendChild(e);
+    } else {
+      var top = items[0];
+      var card = document.createElement("div");
+      card.className = "now";
+      var l = document.createElement("div");
+      l.className = "label";
+      l.textContent = "Working on";
+      var t = document.createElement("div");
+      t.className = "now-text";
+      t.textContent = top.text;
+      var foot = document.createElement("div");
+      foot.className = "now-foot";
+      var a = document.createElement("span");
+      a.className = "age";
+      a.textContent = "Pushed " + ago(top.ts);
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "primary";
+      b.textContent = items.length > 1 ? "Pop, back to previous" : "Pop, all done";
+      b.addEventListener("click", pop);
+      foot.appendChild(a);
+      foot.appendChild(b);
+      card.appendChild(l);
+      card.appendChild(t);
+      card.appendChild(foot);
+      wrap.appendChild(card);
+    }
+
+    var under = $("under");
+    under.textContent = "";
+    var rest = items.slice(1);
+    $("under-wrap").hidden = rest.length === 0;
+    rest.forEach(function(it, i){
+      var li = document.createElement("li");
+      var d = document.createElement("span");
+      d.className = "depth";
+      d.textContent = String(items.length - 1 - i);
+      var tx = document.createElement("span");
+      tx.className = "item-text";
+      tx.textContent = it.text;
+      var ag = document.createElement("span");
+      ag.className = "item-age";
+      ag.textContent = ago(it.ts);
+      var x = document.createElement("button");
+      x.type = "button";
+      x.className = "drop";
+      x.textContent = "Drop";
+      x.setAttribute("aria-label", "Drop " + it.text + " from the stack");
+      x.addEventListener("click", function(){ remove(it); });
+      li.appendChild(d); li.appendChild(tx); li.appendChild(ag); li.appendChild(x);
+      under.appendChild(li);
+    });
+  }
+
+  function offerUndo(it){
+    lastPopped = it;
+    $("toast-text").textContent = "Removed: " + it.text;
+    $("toast").hidden = false;
+    clearTimeout(undoTimer);
+    undoTimer = setTimeout(function(){ $("toast").hidden = true; lastPopped = null; }, 15000);
+  }
+
+  function fail(e){
+    showNote("That change did not save" + (e && e.message ? " (" + e.message + ")" : "") + ". Try again.");
+  }
+
+  async function removeItem(it){
+    if (col){
+      try { await col.doc(it.id).delete(); } catch(e){ fail(e); return false; }
+    } else {
+      items = items.filter(function(x){ return x.id !== it.id; });
+      render();
+    }
+    return true;
+  }
+
+  async function pop(){
+    if (!items.length) return;
+    var it = items[0];
+    if (await removeItem(it)) offerUndo(it);
+  }
+
+  async function remove(it){
+    if (await removeItem(it)) offerUndo(it);
+  }
+
+  async function restore(){
+    var it = lastPopped;
+    if (!it) return;
+    $("toast").hidden = true;
+    lastPopped = null;
+    if (col){
+      try { await col.doc(it.id).set({ text: it.text, ts: it.ts }); } catch(e){ fail(e); }
+    } else {
+      items.push(it);
+      items.sort(function(a, b){ return b.ts - a.ts; });
+      render();
+    }
+  }
+
+  async function push(text){
+    var ts = Date.now();
+    var id = "s-" + ts.toString(36) + Math.random().toString(36).slice(2, 6);
+    if (col){
+      try { await col.doc(id).set({ text: text, ts: ts }); } catch(e){ fail(e); return false; }
+    } else {
+      items.unshift({ id: id, text: text, ts: ts });
+      render();
+    }
+    return true;
+  }
+
+  $("push-form").addEventListener("submit", async function(ev){
+    ev.preventDefault();
+    var inp = $("push-input");
+    var text = inp.value.trim();
+    if (!text) return;
+    showNote("");
+    inp.value = "";
+    var ok = await push(text);
+    if (!ok) inp.value = text;
+    inp.focus();
+  });
+  $("undo-btn").addEventListener("click", restore);
+
+  async function init(){
+    render();
+    var db = null, uid = null;
+    try {
+      if (typeof claude !== "undefined"){
+        db = await claude.use("db");
+        var user = await claude.use("user");
+        uid = user ? await user.id() : null;
+      }
+    } catch(e){}
+    if (!db || !uid){
+      setStatus("local", "Not synced");
+      showNote("This view cannot reach the sync store, so the stack lives only in this tab. Open the page signed in to claude.ai to sync across devices.");
+      render();
+      return;
+    }
+    col = db.collection("data/users/" + uid);
+    setStatus("connecting", "Connecting");
+    loadTimer = setTimeout(function(){
+      setStatus("local", "Offline?");
+      showNote("Cannot reach the sync store yet. What you see may be out of date.");
+    }, 10000);
+    col.orderBy("ts", "desc").limit(200).onSnapshot(function(snap){
+      items = snap.docs.map(function(d){
+        var v = d.data() || {};
+        return { id: d.id, text: String(v.text || ""), ts: Number(v.ts) || 0 };
+      });
+      if (!snap.metadata.fromCache){
+        clearTimeout(loadTimer);
+        setStatus("synced", "Synced");
+        showNote("");
+      }
+      render();
+    }, function(e){
+      clearTimeout(loadTimer);
+      setStatus("local", "Sync stopped");
+      showNote("Sync stopped (" + (e && e.code ? e.code : "error") + "). Reload the page to reconnect.");
+    });
+  }
+
+  setInterval(function(){ if (items.length) render(); }, 30000);
+  init();
+})();
+</script>
+</body>
+</html>
