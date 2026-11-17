@@ -3,10 +3,17 @@ services:
     build: .
     restart: unless-stopped
     # No host port is published, so nothing is reachable on the host's localhost.
-    # Reach it from a reverse proxy on a Docker network it shares; see the README.
+    # Attach your reverse proxy or agent to the "interrupt-stack" network below; see the README.
     # There is no authentication and no TLS in this container: put both in front of it.
+    networks:
+      - interrupt-stack
     volumes:
       - interrupt-stack-data:/data
+
+networks:
+  interrupt-stack:
+    # A fixed name, so other stacks can attach to it as an external network whatever this stack is called.
+    name: interrupt-stack
 
 volumes:
   interrupt-stack-data:

@@ -8,7 +8,7 @@ A push/pop stack of what you're working on. Push a task when you start it; pop i
 docker compose up -d --build
 ```
 
-The container publishes no port on the host, so nothing is reachable on the host's `localhost`. The app and its API listen on port `9958` inside the container. Put the service on a Docker network that your reverse proxy also uses, and point the proxy at `interrupt-stack:9958`. Data lives in the `interrupt-stack-data` volume (a SQLite file at `/data/stack.db`).
+The container publishes no port on the host, so nothing is reachable on the host's `localhost`. The app and its API listen on port `9958` inside the container. The compose file defines a network named `interrupt-stack`. Attach your reverse proxy or agent to it (for example `networks: interrupt-stack: {external: true}` in the agent's compose file, or `docker network connect interrupt-stack <container>`) and point it at `interrupt-stack:9958`. The network is created when this stack is deployed, so deploy this stack before starting anything that references it as external. Data lives in the `interrupt-stack-data` volume (a SQLite file at `/data/stack.db`).
 
 The container has a health check on `/healthz`, so `docker compose ps` shows whether it is healthy.
 
@@ -32,7 +32,7 @@ Settings below come from Dockhand's manual (https://dockhand.pro/manual, read 20
 - Compose file path: `compose.yaml` (the default is `docker-compose.yml`, so set it).
 - Turn on **Build images on deploy**. It is off by default and adds `--build`; the image is built from this repo's `Dockerfile`.
 - Leave **Re-pull images** off.
-- Nothing needs configuring in the stack's environment: the compose file has no variables. Attach the service to your proxy's network (or add your proxy's labels) in a compose override or in `compose.yaml`.
+- Nothing needs configuring in the stack's environment: the compose file has no variables. Attach your proxy or agent to the `interrupt-stack` network (see above).
 - On a remote host running Hawser from its standard systemd unit, a build needs the unit's `DOCKER_CONFIG` and `RuntimeDirectory` lines (current Hawser installers add them; older installs do not). Without them the build fails with `mkdir /root/.docker: read-only file system`.
 - Dockhand only redeploys when the git commit changed (a manual Deploy always redeploys), so a new commit is what triggers a rebuild.
 
