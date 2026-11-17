@@ -1,0 +1,9 @@
+{
+  "name": "interrupt-stack",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "start": "bun server/main.ts"
+  }
+}
