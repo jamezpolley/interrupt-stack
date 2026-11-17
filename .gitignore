@@ -4,3 +4,4 @@ data/
 *.db
 *.db-*
 .docker/
+web/icons/*.png

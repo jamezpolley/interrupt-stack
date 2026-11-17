@@ -67,7 +67,7 @@ Needs [Bun](https://bun.sh) (the repo pins it with mise).
 ```sh
 bun test                              # server and sync-core tests
 PORT=8099 DATA_DIR=/tmp/ist bun server/main.ts
-bun scripts/make-icons.ts             # regenerate web/icons
+bun scripts/make-icons.ts             # generate web/icons (not in git; the Docker build runs this)
 ```
 
 Design and plan: `docs/superpowers/`. `prototype/index.html` is the earlier claude.ai artifact version, kept for reference.

@@ -3,9 +3,12 @@ FROM oven/bun:1
 WORKDIR /app
 COPY server/ ./server/
 COPY web/ ./web/
+COPY scripts/ ./scripts/
 
-# Tests are not needed at runtime.
-RUN rm -f server/*.test.ts web/*.test.js \
+# The app icons are generated here and are not stored in git. Tests and the script itself
+# are not needed at runtime.
+RUN bun scripts/make-icons.ts \
+ && rm -rf scripts server/*.test.ts web/*.test.js \
  && mkdir -p /data && chown bun:bun /data
 
 ENV PORT=9958 DATA_DIR=/data
