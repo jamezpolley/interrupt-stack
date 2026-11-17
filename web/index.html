@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Interrupt Stack</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <header>
+    <h1>Interrupt stack</h1>
+    <div class="meta">
+      <span id="depth">0 deep</span>
+      <span><span id="dot" class="dot"></span><span id="status">Connecting</span></span>
+    </div>
+  </header>
+
+  <form id="push-form" autocomplete="off">
+    <input type="text" id="push-input" maxlength="200" placeholder="What are you starting now?" aria-label="New task to push onto the stack">
+    <button type="submit" class="primary" id="push-btn">Push</button>
+  </form>
+
+  <p class="note" id="note" hidden></p>
+
+  <section id="now-wrap" aria-live="polite"></section>
+
+  <div class="toast" id="toast" hidden>
+    <span id="toast-text"></span>
+    <button type="button" id="undo-btn">Undo</button>
+  </div>
+
+  <section class="under" id="under-wrap" hidden>
+    <div class="label">Underneath, most recent first</div>
+    <ol id="under"></ol>
+  </section>
+</main>
+<script type="module" src="/app.js"></script>
+</body>
+</html>
