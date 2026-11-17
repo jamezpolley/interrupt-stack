@@ -1,0 +1,6 @@
+.git
+.superpowers
+docs
+prototype
+node_modules
+*.db*
