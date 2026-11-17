@@ -22,6 +22,41 @@ const json = (body: unknown, status = 200) =>
 export function createApp(store: Store, opts: { webDir: string }) {
   const root = resolve(opts.webDir);
   const streams = new Set<ReadableStreamDefaultController<Uint8Array>>();
+  const startedAt = Math.floor(Date.now() / 1000);
+  const requests = new Map<string, number>(); // `${route}|${method}|${code}` -> count
+
+  // Route labels come from a fixed set so a scanner hitting random paths cannot grow the metric series.
+  function routeLabel(pathname: string): string {
+    if (pathname === "/healthz" || pathname === "/metrics" || pathname === "/api/events" || pathname === "/api/items") return pathname;
+    if (/^\/api\/items\/[^/]+$/.test(pathname)) return "/api/items/:id";
+    return pathname.startsWith("/api/") ? "/api/other" : "static";
+  }
+
+  function metricsText(): string {
+    const { live, removed } = store.counts();
+    const lines = [
+      "# HELP interrupt_stack_items Stack items held by the server.",
+      "# TYPE interrupt_stack_items gauge",
+      `interrupt_stack_items{state="live"} ${live}`,
+      `interrupt_stack_items{state="removed"} ${removed}`,
+      "# HELP interrupt_stack_seq Highest change sequence number issued.",
+      "# TYPE interrupt_stack_seq gauge",
+      `interrupt_stack_seq ${currentSeq()}`,
+      "# HELP interrupt_stack_event_streams Open server-sent event streams.",
+      "# TYPE interrupt_stack_event_streams gauge",
+      `interrupt_stack_event_streams ${streams.size}`,
+      "# HELP interrupt_stack_start_time_seconds Process start time as a unix timestamp.",
+      "# TYPE interrupt_stack_start_time_seconds gauge",
+      `interrupt_stack_start_time_seconds ${startedAt}`,
+      "# HELP interrupt_stack_http_requests_total HTTP requests handled, by route, method and status code.",
+      "# TYPE interrupt_stack_http_requests_total counter",
+    ];
+    for (const [key, n] of [...requests].sort(([a], [b]) => (a < b ? -1 : 1))) {
+      const [route, method, code] = key.split("|");
+      lines.push(`interrupt_stack_http_requests_total{route="${route}",method="${method}",code="${code}"} ${n}`);
+    }
+    return lines.join("\n") + "\n";
+  }
 
   const currentSeq = () => store.since(Number.MAX_SAFE_INTEGER).seq;
   const seqEvent = () => enc.encode(`event: seq\ndata: ${currentSeq()}\n\n`);
@@ -108,10 +143,13 @@ export function createApp(store: Store, opts: { webDir: string }) {
     });
   }
 
-  async function handle(req: Request): Promise<Response> {
+  async function dispatch(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const { pathname } = url;
     if (pathname === "/healthz") return new Response("ok");
+    if (pathname === "/metrics" && req.method === "GET") {
+      return new Response(metricsText(), { headers: { "content-type": "text/plain; version=0.0.4; charset=utf-8" } });
+    }
     if (pathname === "/api/events" && req.method === "GET") return events();
     if (pathname === "/api/items" && req.method === "GET") {
       const n = Number(url.searchParams.get("since"));
@@ -122,6 +160,22 @@ export function createApp(store: Store, opts: { webDir: string }) {
     if (pathname.startsWith("/api/")) return json({ error: "not found" }, 404);
     if (req.method === "GET" || req.method === "HEAD") return serveStatic(pathname);
     return new Response("not found", { status: 404 });
+  }
+
+  async function handle(req: Request): Promise<Response> {
+    const route = routeLabel(new URL(req.url).pathname);
+    const count = (code: number) => {
+      const key = `${route}|${req.method}|${code}`;
+      requests.set(key, (requests.get(key) ?? 0) + 1);
+    };
+    try {
+      const res = await dispatch(req);
+      count(res.status);
+      return res;
+    } catch (e) {
+      count(500);
+      throw e;
+    }
   }
 
   return { fetch: handle, notify };

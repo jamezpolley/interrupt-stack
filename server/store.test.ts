@@ -117,4 +117,14 @@ describe("store", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test("counts reports live and removed items separately", () => {
+    const s = mem();
+    expect(s.counts()).toEqual({ live: 0, removed: 0 });
+    s.upsert("s-aaaa", input("a"));
+    s.upsert("s-bbbb", input("b"));
+    s.upsert("s-cccc", input("c", 3, true));
+    s.upsert("s-bbbb", input("b", 2, true));
+    expect(s.counts()).toEqual({ live: 1, removed: 2 });
+  });
 });

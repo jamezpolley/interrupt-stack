@@ -47,6 +47,8 @@ Not covered by the manual: whether a webhook-triggered run applies the build opt
 
 API (JSON): `GET /api/items?since=<seq>`, `PUT /api/items/<id>`, `GET /api/events` (event stream), `GET /healthz`.
 
+`GET /metrics` serves Prometheus metrics (text exposition format 0.0.4): `interrupt_stack_items{state}`, `interrupt_stack_seq`, `interrupt_stack_event_streams`, `interrupt_stack_start_time_seconds`, and `interrupt_stack_http_requests_total{route,method,code}`. Route labels come from a fixed set, so unknown paths all count as `static`. Like everything else here it has no authentication, so keep it behind the same access control.
+
 ## Develop
 
 Needs [Bun](https://bun.sh) (the repo pins it with mise).

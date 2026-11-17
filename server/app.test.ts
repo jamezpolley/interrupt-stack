@@ -127,3 +127,67 @@ describe("events", () => {
     await reader.cancel();
   });
 });
+
+describe("metrics", () => {
+  const metrics = async () => (await get("/metrics")).text();
+  const sample = (text: string, name: string) => {
+    const line = text.split("\n").find((l) => l.startsWith(name + " ") || l.startsWith(name + "{"));
+    return line ? Number(line.slice(line.lastIndexOf(" ") + 1)) : undefined;
+  };
+
+  test("GET /metrics is served in the Prometheus text format", async () => {
+    const res = await get("/metrics");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("text/plain; version=0.0.4; charset=utf-8");
+    const text = await res.text();
+    expect(text.endsWith("\n")).toBe(true);
+    for (const line of text.trimEnd().split("\n")) {
+      expect(line).toMatch(/^(# (HELP|TYPE) [a-z_:][a-z0-9_:]* .+|[a-z_:][a-z0-9_:]*(\{[^}]*\})? -?[0-9.e+]+)$/);
+    }
+    expect(text).toContain("# TYPE interrupt_stack_items gauge");
+    expect(text).toContain("# TYPE interrupt_stack_http_requests_total counter");
+  });
+
+  test("item gauges and seq follow writes", async () => {
+    await put("s-aaaa", item("a"));
+    await put("s-bbbb", item("b"));
+    await put("s-cccc", item("c", 3, true));
+    const text = await metrics();
+    expect(sample(text, 'interrupt_stack_items{state="live"}')).toBe(2);
+    expect(sample(text, 'interrupt_stack_items{state="removed"}')).toBe(1);
+    expect(sample(text, "interrupt_stack_seq")).toBe(3);
+  });
+
+  test("requests are counted by route, method and status code", async () => {
+    await put("s-aaaa", item());
+    await put("s-bbbb", item("   "));
+    await get("/api/items");
+    const text = await metrics();
+    expect(sample(text, 'interrupt_stack_http_requests_total{route="/api/items/:id",method="PUT",code="200"}')).toBe(1);
+    expect(sample(text, 'interrupt_stack_http_requests_total{route="/api/items/:id",method="PUT",code="400"}')).toBe(1);
+    expect(sample(text, 'interrupt_stack_http_requests_total{route="/api/items",method="GET",code="200"}')).toBe(1);
+  });
+
+  test("unknown paths share one label so scanners cannot grow the metric set", async () => {
+    await get("/nope-1.txt");
+    await get("/nope-2.txt");
+    const text = await metrics();
+    expect(sample(text, 'interrupt_stack_http_requests_total{route="static",method="GET",code="404"}')).toBe(2);
+    expect(text).not.toContain("nope-1");
+  });
+
+  test("open event streams are gauged and released on cancel", async () => {
+    const res = await get("/api/events");
+    const reader = res.body!.getReader();
+    await reader.read();
+    expect(sample(await metrics(), "interrupt_stack_event_streams")).toBe(1);
+    await reader.cancel();
+    expect(sample(await metrics(), "interrupt_stack_event_streams")).toBe(0);
+  });
+
+  test("process start time is a plausible unix timestamp in seconds", async () => {
+    const t = sample(await metrics(), "interrupt_stack_start_time_seconds")!;
+    expect(t).toBeGreaterThan(1_700_000_000);
+    expect(t).toBeLessThanOrEqual(Date.now() / 1000);
+  });
+});

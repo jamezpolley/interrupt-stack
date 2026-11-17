@@ -30,7 +30,8 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const req = event.request;
   const url = new URL(req.url);
-  if (req.method !== "GET" || url.origin !== location.origin || url.pathname.startsWith("/api/")) return;
+  const live = url.pathname.startsWith("/api/") || url.pathname === "/metrics" || url.pathname === "/healthz";
+  if (req.method !== "GET" || url.origin !== location.origin || live) return;
 
   // Cache first so the app opens instantly and offline; refresh the cached copy in the background.
   event.respondWith(

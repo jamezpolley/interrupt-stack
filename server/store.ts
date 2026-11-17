@@ -16,6 +16,7 @@ const ID_RE = /^s-[a-z0-9]{4,40}$/;
 export interface Store {
   upsert(id: string, input: ItemInput): Item;
   since(seq: number): { seq: number; items: Item[] };
+  counts(): { live: number; removed: number };
   close(): void;
 }
 
@@ -39,6 +40,9 @@ export function openStore(path: string): Store {
   );
   const later = db.prepare("SELECT id, text, ts, removed, seq FROM items WHERE seq > $seq ORDER BY seq ASC");
   const maxSeq = db.prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM items");
+  const tally = db.prepare(
+    "SELECT COALESCE(SUM(removed = 0), 0) AS live, COALESCE(SUM(removed = 1), 0) AS removed FROM items",
+  );
 
   const upsertTx = db.transaction((id: string, text: string, ts: number, removed: boolean) =>
     toItem(write.get({ $id: id, $text: text, $ts: ts, $removed: removed ? 1 : 0 }) as Row),
@@ -56,6 +60,9 @@ export function openStore(path: string): Store {
     since(seq) {
       const items = (later.all({ $seq: seq }) as Row[]).map(toItem);
       return { seq: (maxSeq.get() as { seq: number }).seq, items };
+    },
+    counts() {
+      return tally.get() as { live: number; removed: number };
     },
     close() {
       db.close();
