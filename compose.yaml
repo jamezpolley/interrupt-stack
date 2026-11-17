@@ -9,6 +9,20 @@ services:
       - interrupt-stack
     volumes:
       - interrupt-stack-data:/data
+    # Pangolin resource labels. INTERRUPT_STACK_DOMAIN and INTERRUPT_STACK_POLICY come from the
+    # stack's environment (Dockhand's variables panel or a .env file); leave them unset if you do not use Pangolin.
+    labels:
+      pangolin.public-resources.interrupt-stack.name: interrupt-stack
+      pangolin.public-resources.interrupt-stack.protocol: http
+      pangolin.public-resources.interrupt-stack.full-domain: ${INTERRUPT_STACK_DOMAIN:-}
+      pangolin.public-resources.interrupt-stack.policy: ${INTERRUPT_STACK_POLICY:-}
+      pangolin.public-resources.interrupt-stack.targets[0].method: http
+      pangolin.public-resources.interrupt-stack.targets[0].hostname: interrupt-stack
+      pangolin.public-resources.interrupt-stack.targets[0].port: 9958
+      pangolin.public-resources.interrupt-stack.targets[0].healthcheck.enabled: true
+      pangolin.public-resources.interrupt-stack.targets[0].healthcheck.hostname: interrupt-stack
+      pangolin.public-resources.interrupt-stack.targets[0].healthcheck.port: 9958
+      pangolin.public-resources.interrupt-stack.targets[0].healthcheck.path: /healthz
 
 networks:
   interrupt-stack:
