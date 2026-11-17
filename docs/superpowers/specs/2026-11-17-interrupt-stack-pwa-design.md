@@ -32,7 +32,7 @@ The artifact prototype works but only syncs inside a claude.ai tab and cannot be
 
 ## Constraints
 
-- The server has no authentication, since access control is handled outside the container. Its docs say so plainly. The compose file publishes the port on 127.0.0.1 by default for that reason (my call; James can change it).
+- The server has no authentication, since access control is handled outside the container. Its docs say so plainly. The compose file publishes no host port, so the app is reachable only from containers on a shared Docker network.
 - Browsers only install a PWA and register a service worker from a secure origin. James's access layer must provide HTTPS. The app should say so if it detects an insecure origin.
 - Device clocks order the stack, as in the prototype. A badly skewed clock can misorder items.
 
@@ -84,7 +84,7 @@ Conflicts: the last write the server receives for an `id` wins. This is acceptab
 ### Container
 
 - Dockerfile builds a small image that runs the server as a non-root user, with a health check on `/healthz`.
-- `compose.yaml` publishes `${INTERRUPT_STACK_BIND:-127.0.0.1}:${INTERRUPT_STACK_PORT:-8080}:8080` and mounts a named volume at `/data` for the SQLite file.
+- `compose.yaml` publishes no host port and mounts a named volume at `/data` for the SQLite file.
 - No configuration is required.
 
 ### Repo layout

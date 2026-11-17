@@ -2,9 +2,9 @@ services:
   interrupt-stack:
     build: .
     restart: unless-stopped
-    ports:
-      # No authentication and no TLS in this container: put access control and HTTPS in front of it.
-      - "${INTERRUPT_STACK_BIND:-127.0.0.1}:${INTERRUPT_STACK_PORT:-8080}:8080"
+    # No host port is published, so nothing is reachable on the host's localhost.
+    # Reach it from a reverse proxy on a Docker network it shares; see the README.
+    # There is no authentication and no TLS in this container: put both in front of it.
     volumes:
       - interrupt-stack-data:/data
 
