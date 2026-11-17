@@ -122,7 +122,7 @@ Behaviour: every action updates local items and the dirty set via storage first,
 - Create: `Dockerfile`, `compose.yaml`, `.dockerignore`
 - Modify: `README.md`
 
-Dockerfile: Bun base image pinned to a major version, copies `server/` and `web/` only (tests excluded), creates `/data` owned by the non-root `bun` user, `USER bun`, `EXPOSE 8080`, `HEALTHCHECK` calling `/healthz` with `bun -e`, `CMD ["bun", "server/main.ts"]`. `compose.yaml` has one service with `build: .`, `restart: unless-stopped`, the named volume and the port mapping from Global Constraints. `README.md` gets run instructions, a "Deploying from git (Dockhand)" section that says to point the stack at `compose.yaml` and set `BIND` and `PORT` as environment variables there, the HTTPS-required note, the no-auth warning, and the iPhone and iPad install steps. Before writing that section, check Dockhand's documentation for how it deploys compose stacks from a git repo (compose path, build support, environment variables) and write only what it confirms; note anything unconfirmed in the README as unverified.
+Dockerfile: Bun base image pinned to a major version, copies `server/` and `web/` only (tests excluded), creates `/data` owned by the non-root `bun` user, `USER bun`, `EXPOSE 8080`, `HEALTHCHECK` calling `/healthz` with `bun -e`, `CMD ["bun", "server/main.ts"]`. `compose.yaml` has one service with both `build: .` and `image: ghcr.io/jamezpolley/interrupt-stack:latest` (so a deployer that builds uses the Dockerfile and one that only pulls uses the published image from Task 8), `restart: unless-stopped`, the named volume and the port mapping from Global Constraints. `README.md` gets run instructions, a "Deploying from git (Dockhand)" section that says to point the stack at `compose.yaml` and set `BIND` and `PORT` as environment variables there, the HTTPS-required note, the no-auth warning, and the iPhone and iPad install steps. Before writing that section, check Dockhand's documentation for how it deploys compose stacks from a git repo (compose path, build support, environment variables) and write only what it confirms; note anything unconfirmed in the README as unverified.
 
 - [ ] **Step 1:** Write the files.
 - [ ] **Step 2:** Run `docker compose up -d --build`, wait for the container to report healthy, and `curl -s localhost:8080/healthz` prints `ok`.
@@ -139,6 +139,19 @@ Write the checklist James runs on real devices, since iOS cannot be tested here:
 
 - [ ] **Step 1:** Research and write the checklist.
 - [ ] **Step 2:** Commit and push.
+
+### Task 8: Image publishing
+
+**Files:**
+- Create: `.github/workflows/image.yml`
+- Modify: `README.md`
+
+On every push to `main`, the workflow runs `bun test`, then builds the Dockerfile and pushes `ghcr.io/jamezpolley/interrupt-stack` tagged `latest` and with the commit SHA, authenticating with `GITHUB_TOKEN` (permissions `contents: read`, `packages: write`). Use official `docker/login-action`, `docker/setup-buildx-action` and `docker/build-push-action`, pinned to major versions. Build for `linux/amd64` only unless the target host is arm; ask before adding more. The README notes that the first published package may be private and must be set to public in the package settings (or Dockhand given a registry credential), and that a git-deploying tool that cannot build should use the `image:` reference.
+
+- [ ] **Step 1:** Write the workflow.
+- [ ] **Step 2:** Validate it with `actionlint` if available (through mise) or by reading it against the action docs.
+- [ ] **Step 3:** Push to `main` and confirm the run succeeds with `gh run watch`, and `docker pull ghcr.io/jamezpolley/interrupt-stack:latest` works from this machine (after any visibility change).
+- [ ] **Step 4:** Commit.
 
 ---
 
