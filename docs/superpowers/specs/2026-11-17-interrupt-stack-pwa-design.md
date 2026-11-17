@@ -84,7 +84,7 @@ Conflicts: the last write the server receives for an `id` wins. This is acceptab
 ### Container
 
 - Dockerfile builds a small image that runs the server as a non-root user, with a health check on `/healthz`.
-- `compose.yaml` publishes `127.0.0.1:${PORT:-8080}:8080` and mounts a named volume at `/data` for the SQLite file.
+- `compose.yaml` publishes `${INTERRUPT_STACK_BIND:-127.0.0.1}:${INTERRUPT_STACK_PORT:-8080}:8080` and mounts a named volume at `/data` for the SQLite file.
 - No configuration is required.
 
 ### Repo layout

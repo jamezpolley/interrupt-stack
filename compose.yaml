@@ -4,7 +4,7 @@ services:
     restart: unless-stopped
     ports:
       # No authentication and no TLS in this container: put access control and HTTPS in front of it.
-      - "${BIND:-127.0.0.1}:${PORT:-8080}:8080"
+      - "${INTERRUPT_STACK_BIND:-127.0.0.1}:${INTERRUPT_STACK_PORT:-8080}:8080"
     volumes:
       - interrupt-stack-data:/data
 

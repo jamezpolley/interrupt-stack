@@ -12,8 +12,10 @@ The app and its API are served on one port, `8080` by default, bound to `127.0.0
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `PORT` | `8080` | Host port to publish |
-| `BIND` | `127.0.0.1` | Host address to publish on. Set it if your reverse proxy can't reach loopback |
+| `INTERRUPT_STACK_PORT` | `8080` | Host port to publish |
+| `INTERRUPT_STACK_BIND` | `127.0.0.1` | Host address to publish on. Set it if your reverse proxy can't reach loopback |
+
+The names are deliberately specific: a generic `PORT` collides with other tools (a Hawser agent's own config sets `PORT=2376`, for example).
 
 Check it with `curl localhost:8080/healthz`, which prints `ok`.
 
@@ -37,7 +39,8 @@ Settings below come from Dockhand's manual (https://dockhand.pro/manual, read 20
 - Compose file path: `compose.yaml` (the default is `docker-compose.yml`, so set it).
 - Turn on **Build images on deploy**. It is off by default and adds `--build`; the image is built from this repo's `Dockerfile`.
 - Leave **Re-pull images** off.
-- Set `BIND` and `PORT` as environment overrides in the stack editor if you need non-default values.
+- Set `INTERRUPT_STACK_BIND` and `INTERRUPT_STACK_PORT` as environment overrides in the stack editor if you need non-default values.
+- On a remote host running Hawser from its standard systemd unit, a build needs the unit's `DOCKER_CONFIG` and `RuntimeDirectory` lines (current Hawser installers add them; older installs do not). Without them the build fails with `mkdir /root/.docker: read-only file system`.
 - Dockhand only redeploys when the git commit changed (a manual Deploy always redeploys), so a new commit is what triggers a rebuild.
 
 Not covered by the manual: whether a webhook-triggered run applies the build option. Check on your first webhook deploy.
