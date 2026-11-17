@@ -152,15 +152,25 @@ async function init() {
   renderStatus(sync.status());
 
   const syncNow = () => sync.syncNow().catch(() => {});
+
+  // EventSource reconnects by itself after drops, but on iOS a stream can look open after the app resumes
+  // from the background while being dead, so it is recreated whenever the page becomes visible.
+  let events;
+  const connectEvents = () => {
+    events?.close();
+    events = new EventSource("/api/events");
+    events.addEventListener("seq", syncNow);
+  };
+  connectEvents();
+
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") syncNow();
+    if (document.visibilityState !== "visible") return;
+    connectEvents();
+    syncNow();
   });
   addEventListener("online", syncNow);
   setInterval(syncNow, 60000);
   setInterval(render, 30000);
-
-  const events = new EventSource("/api/events"); // reconnects by itself after drops
-  events.addEventListener("seq", syncNow);
 }
 
 init();
