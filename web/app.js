@@ -117,7 +117,16 @@ async function undo() {
   await sync.restore(it.id);
 }
 
+function setUpInstall() {
+  if (!window.isSecureContext) {
+    showNote("This page was opened without HTTPS, so browsers will not install it or let it work offline. Open it through an https:// address.");
+    return;
+  }
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
+}
+
 async function init() {
+  setUpInstall();
   let storage;
   try {
     storage = await openStorage();
