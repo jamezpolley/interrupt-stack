@@ -38,6 +38,17 @@ Settings below come from Dockhand's manual (https://dockhand.pro/manual, read 20
 
 Not covered by the manual: whether a webhook-triggered run applies the build option. Check on your first webhook deploy.
 
+## Pangolin labels
+
+`compose.yaml` carries `pangolin.public-resources.interrupt-stack.*` labels. Two values come from the stack's environment; leave them unset if you do not use Pangolin:
+
+```
+INTERRUPT_STACK_DOMAIN=interrupts.example.com
+INTERRUPT_STACK_POLICY=your-policy-name
+```
+
+Enter the values as plain text, with nothing after them. In Dockhand's variables panel a trailing `# comment` becomes part of the value and ends up in the label. The target is `interrupt-stack:9958` on the `interrupt-stack` network, with a health check on `/healthz`.
+
 ## How it works
 
 - Each stack item is its own record (`id`, `text`, `ts`, `removed`, `seq`), so two devices pushing at once never overwrite each other. Removing an item sets a flag, so the removal reaches your other devices; undo clears it.
