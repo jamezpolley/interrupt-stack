@@ -61,6 +61,11 @@ Enter the values as plain text, with nothing after them. In Dockhand's variables
 
 API (JSON): `GET /api/items?since=<seq>`, `PUT /api/items/<id>`, `GET /api/events` (event stream), `GET /api/version`, `GET /healthz`.
 
+## Pop & push, and Done today
+
+- **Pop & push** takes the current item off the stack and pushes what you typed, as one change: the screen never shows the empty stack in between, and offline both changes are kept and sent together. With nothing typed it does nothing (it never pops without pushing); with an empty stack it just pushes. The usual Undo appears for the item it removed.
+- **Done today** lists everything taken off the stack since local midnight on that device, newest first, greyed out, with the time. It rolls over at midnight. Popped and dropped items both appear, because the app records only that an item was removed. Items removed before this version existed show under the day they were pushed.
+
 ## Updating the app on your devices
 
 Devices keep a cached copy of the app so it opens instantly and offline, and they refresh it in the background, so a new release normally appears on the second load. Two things speed that up:

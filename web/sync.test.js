@@ -54,7 +54,7 @@ function world() {
       }
       return server.current.app.fetch(new Request("http://t" + path, init));
     };
-    const sync = createSync({ storage, fetch, now: opts.now, onStatus: (s) => statuses.push(s) });
+    const sync = createSync({ storage, fetch, now: opts.now, onChange: opts.onChange, onStatus: (s) => statuses.push(s) });
     return { sync, ctl, storage, statuses };
   };
   return { server, mkClient };
@@ -457,5 +457,70 @@ describe("event log from the client", () => {
       ["push", base],
       ["pop", base + 50_000],
     ]);
+  });
+});
+
+describe("swap", () => {
+  test("pops the current item and pushes the new one, and both reach the server", async () => {
+    const w = world();
+    const a = w.mkClient();
+    await a.sync.start();
+    await a.sync.push("meeting");
+    const result = await a.sync.swap("lunch");
+    await a.sync.syncNow();
+    expect(texts(a)).toEqual(["lunch"]);
+    expect(result.removed.text).toBe("meeting");
+    expect(result.pushed.text).toBe("lunch");
+    const rows = w.server.current.store.since(0).items;
+    expect(rows.map((r) => [r.text, r.removed]).sort()).toEqual([["lunch", false], ["meeting", true]]);
+    const events = w.server.current.store.log().map((e) => `${e.op} ${e.text}`);
+    expect(events.sort()).toEqual(["pop meeting", "push lunch", "push meeting"]);
+  });
+
+  test("the screen never sees the empty stack between the pop and the push", async () => {
+    const w = world();
+    const seen = [];
+    let a;
+    a = w.mkClient({ onChange: () => seen.push(a.sync.stack().map((i) => i.text)) });
+    await a.sync.start();
+    await a.sync.push("meeting");
+    seen.length = 0;
+    await a.sync.swap("lunch");
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((stack) => stack.length === 1 && stack[0] === "lunch")).toBe(true);
+  });
+
+  test("on an empty stack it simply pushes", async () => {
+    const w = world();
+    const a = w.mkClient();
+    await a.sync.start();
+    const result = await a.sync.swap("first thing");
+    expect(texts(a)).toEqual(["first thing"]);
+    expect(result.removed).toBeNull();
+  });
+
+  test("whitespace text changes nothing, in particular it does not pop", async () => {
+    const w = world();
+    const a = w.mkClient();
+    await a.sync.start();
+    await a.sync.push("meeting");
+    expect(await a.sync.swap("   ")).toBeNull();
+    expect(texts(a)).toEqual(["meeting"]);
+  });
+
+  test("made offline, both changes are kept and sent together later", async () => {
+    const w = world();
+    const a = w.mkClient();
+    await a.sync.start();
+    await a.sync.push("meeting");
+    await a.sync.syncNow();
+    a.ctl.online = false;
+    await a.sync.swap("lunch");
+    expect(a.sync.status().pending).toBe(2);
+    a.ctl.online = true;
+    await a.sync.syncNow();
+    expect(a.sync.status()).toEqual({ state: "synced", pending: 0 });
+    const rows = w.server.current.store.since(0).items;
+    expect(rows.map((r) => [r.text, r.removed]).sort()).toEqual([["lunch", false], ["meeting", true]]);
   });
 });

@@ -27,6 +27,7 @@
   <form id="push-form" autocomplete="off">
     <input type="text" id="push-input" maxlength="200" placeholder="What are you starting now?" aria-label="New task to push onto the stack">
     <button type="submit" class="primary" id="push-btn">Push</button>
+    <button type="button" id="swap-btn" title="Pop the current task, then push this one" aria-label="Pop the current task, then push this one" disabled>Pop &amp; push</button>
   </form>
 
   <p class="note" id="note" hidden></p>
@@ -47,6 +48,11 @@
     <div class="label">Underneath, most recent first</div>
     <ol id="under"></ol>
   </section>
+  <section class="done" id="done-wrap" hidden>
+    <div class="label">Done today</div>
+    <ol id="done"></ol>
+  </section>
+
   <footer>
     <button type="button" class="quiet" id="refresh-btn">Refresh app</button>
     <span id="refresh-msg" role="status"></span>

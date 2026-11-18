@@ -2,6 +2,7 @@ import { createSync } from "./sync.js";
 import { openStorage } from "./idb.js";
 import { createEventStream } from "./events.js";
 import { forceRefresh, updateAvailable } from "./refresh.js";
+import { completedToday } from "./today.js";
 
 const $ = (id) => document.getElementById(id);
 const UNDO_MS = 15000;
@@ -81,6 +82,24 @@ function render() {
     foot.append(a, b);
     card.append(l, t, foot);
     wrap.appendChild(card);
+  }
+
+  $("swap-btn").disabled = stack.length === 0;
+
+  const done = completedToday(sync.allItems(), Date.now());
+  const doneList = $("done");
+  doneList.textContent = "";
+  $("done-wrap").hidden = done.length === 0;
+  for (const it of done) {
+    const li = document.createElement("li");
+    const tx = document.createElement("span");
+    tx.className = "item-text";
+    tx.textContent = it.text;
+    const when = document.createElement("span");
+    when.className = "item-age";
+    when.textContent = new Date(it.at ?? it.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    li.append(tx, when);
+    doneList.appendChild(li);
   }
 
   const under = $("under");
@@ -181,6 +200,19 @@ async function init() {
     inp.value = "";
     const item = await sync.push(text);
     if (!item) inp.value = text;
+    inp.focus();
+  });
+  $("swap-btn").addEventListener("click", async () => {
+    const inp = $("push-input");
+    const text = inp.value.trim();
+    if (!text) {
+      inp.focus();
+      return;
+    }
+    inp.value = "";
+    const result = await sync.swap(text);
+    if (!result) inp.value = text;
+    else if (result.removed) offerUndo(result.removed);
     inp.focus();
   });
   $("undo-btn").addEventListener("click", undo);

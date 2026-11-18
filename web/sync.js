@@ -33,16 +33,29 @@ export function createSync({ storage, fetch, now = () => Date.now(), onChange = 
     }
   }
 
-  async function setItem(item) {
+  // Applies one or more changes together: one redraw, one status update, one sync, so a change made of two parts
+  // (a swap) is never seen half done.
+  async function setItems(list) {
     storageFailed = false;
-    items.set(item.id, item);
-    dirty.add(item.id);
-    await safe(() => storage.putItem(item));
+    for (const item of list) {
+      items.set(item.id, item);
+      dirty.add(item.id);
+    }
+    for (const item of list) await safe(() => storage.putItem(item));
     await safe(() => storage.setDirty([...dirty]));
     onChange();
     onStatus(status());
     syncNow().catch(() => {});
   }
+  const setItem = (item) => setItems([item]);
+
+  const newItem = (text, ts) => {
+    const id = `s-${ts.toString(36)}${Math.random().toString(36).slice(2, 6).padEnd(4, "0")}`;
+    return { id, text, ts, at: ts, removed: false, seq: 0 };
+  };
+
+  const currentStack = () =>
+    [...items.values()].filter((i) => !i.removed).sort((a, b) => b.ts - a.ts || (a.id < b.id ? 1 : -1));
 
   async function pass() {
     setState("syncing");
@@ -144,20 +157,31 @@ export function createSync({ storage, fetch, now = () => Date.now(), onChange = 
       await syncNow();
     },
 
-    stack() {
-      return [...items.values()]
-        .filter((i) => !i.removed)
-        .sort((a, b) => b.ts - a.ts || (a.id < b.id ? 1 : -1));
+    stack: currentStack,
+
+    /** Every item, including removed ones, for views of what has been done. */
+    allItems() {
+      return [...items.values()];
     },
 
     async push(text) {
       const trimmed = String(text ?? "").trim();
       if (!trimmed) return null;
-      const ts = now();
-      const id = `s-${ts.toString(36)}${Math.random().toString(36).slice(2, 6).padEnd(4, "0")}`;
-      const item = { id, text: trimmed, ts, at: ts, removed: false, seq: 0 };
+      const item = newItem(trimmed, now());
       await setItem(item);
       return item;
+    },
+
+    /** Take the current item off the stack and push a new one, as one change. Empty text changes nothing. */
+    async swap(text) {
+      const trimmed = String(text ?? "").trim();
+      if (!trimmed) return null;
+      const t = now();
+      const top = currentStack()[0] ?? null;
+      const removed = top ? { ...top, removed: true, at: t } : null;
+      const pushed = newItem(trimmed, t);
+      await setItems(removed ? [removed, pushed] : [pushed]);
+      return { removed: top, pushed };
     },
 
     async remove(id) {

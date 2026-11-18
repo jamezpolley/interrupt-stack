@@ -1,6 +1,6 @@
 // App-shell service worker. Never touches /api/ or non-GET requests: sync is the app's job (sync.js).
 // Bump CACHE when the list of shell files changes; old caches are deleted on activate.
-const CACHE = "interrupt-stack-v3";
+const CACHE = "interrupt-stack-v4";
 const SHELL = [
   "/",
   "/app.js",
@@ -8,6 +8,7 @@ const SHELL = [
   "/idb.js",
   "/events.js",
   "/refresh.js",
+  "/today.js",
   "/version.js",
   "/style.css",
   "/manifest.webmanifest",
