@@ -157,10 +157,19 @@ const REFRESH_MESSAGES = {
   "signed-out": "You may need to sign in again. Nothing was changed.",
 };
 
+let refreshMessageTimer = null;
+function showRefreshMessage(text) {
+  const el = $("refresh-msg");
+  el.textContent = text;
+  el.hidden = false;
+  clearTimeout(refreshMessageTimer);
+  refreshMessageTimer = setTimeout(() => (el.hidden = true), 8000);
+}
+
 async function refreshApp() {
   const buttons = [$("refresh-btn"), $("update-btn")];
   buttons.forEach((b) => (b.disabled = true));
-  $("refresh-msg").textContent = "Refreshing...";
+  showRefreshMessage("Refreshing...");
   const result = await forceRefresh({
     fetch: (p, i) => fetch(p, i),
     caches: window.caches,
@@ -168,7 +177,7 @@ async function refreshApp() {
     reload: () => location.reload(),
   });
   if (result.ok) return; // the page is reloading
-  $("refresh-msg").textContent = REFRESH_MESSAGES[result.reason] ?? REFRESH_MESSAGES.unreachable;
+  showRefreshMessage(REFRESH_MESSAGES[result.reason] ?? REFRESH_MESSAGES.unreachable);
   buttons.forEach((b) => (b.disabled = false));
 }
 

@@ -21,6 +21,9 @@
     <div class="meta">
       <span id="depth">0 deep</span>
       <span><span id="dot" class="dot"></span><span id="status">Connecting</span></span>
+      <button type="button" class="icon" id="refresh-btn" title="Refresh app" aria-label="Refresh app">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg>
+      </button>
     </div>
   </header>
 
@@ -33,6 +36,7 @@
   </form>
 
   <p class="note" id="note" hidden></p>
+  <p class="note quiet-note" id="refresh-msg" role="status" hidden></p>
 
   <div class="update" id="update" hidden>
     <span>A new version of the app is available.</span>
@@ -55,10 +59,6 @@
     <ol id="done"></ol>
   </section>
 
-  <footer>
-    <button type="button" class="quiet" id="refresh-btn">Refresh app</button>
-    <span id="refresh-msg" role="status"></span>
-  </footer>
 </main>
 <script type="module" src="/app.js"></script>
 </body>

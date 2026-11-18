@@ -71,7 +71,7 @@ API (JSON): `GET /api/items?since=<seq>`, `PUT /api/items/<id>`, `GET /api/event
 Devices keep a cached copy of the app so it opens instantly and offline, and they refresh it in the background, so a new release normally appears on the second load. Two things speed that up:
 
 - **Update banner.** The server hashes the web files it ships (`GET /api/version`) and every copy of the app records the version it was built from (`/version.js`, cached with the app). A device checks when it opens, when it comes back online, and once a minute. If the two differ it shows "A new version of the app is available" with a **Refresh app** button. If the server cannot be reached, or answers with a sign-in redirect, it says nothing.
-- **Refresh app** (also a small button at the bottom of the page). It checks the server answers, then clears the cached app files and the service worker and reloads. If the server cannot be reached it changes nothing and says so, because clearing the cache while offline would leave an app that cannot open. Your stack is stored separately and is never touched.
+- **Refresh app** (also a small circular-arrow icon beside the sync status at the top of the page). It checks the server answers, then clears the cached app files and the service worker and reloads. If the server cannot be reached it changes nothing and says so, because clearing the cache while offline would leave an app that cannot open. Your stack is stored separately and is never touched.
 
 The version covers only the web files, so a server-only change does not raise the banner. It is computed when the server starts.
 

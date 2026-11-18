@@ -115,9 +115,9 @@ li{
   display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;
   background:var(--surface);border:1px solid var(--line);border-left:6px solid var(--accent);border-radius:8px;padding:10px 12px;
 }
-footer{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:8px}
-footer #refresh-msg{font-size:.8125rem;color:var(--muted)}
-button.quiet{min-height:36px;padding:4px 10px;font-size:.8125rem;color:var(--muted);background:transparent}
+button.icon{min-height:0;width:28px;height:28px;padding:0;display:inline-grid;place-items:center;border-color:transparent;background:transparent;color:var(--muted);border-radius:6px}
+button.icon:hover:not(:disabled){border-color:var(--line)}
+.quiet-note{color:var(--muted)}
 .done{display:flex;flex-direction:column;gap:8px}
 .done li{background:transparent;border-style:dashed;color:var(--muted)}
 .done .item-text{color:var(--muted)}
