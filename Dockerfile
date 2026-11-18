@@ -39,7 +39,12 @@ COPY --from=src /src /app
 
 # A clone made by the build is shallow: fetch the rest, with the tags, so versions can be described (v1.2.0-3-g5a7581b).
 # If GitHub cannot be reached the build still succeeds, and the version falls back to the short commit.
-RUN if [ -d .git ]; then git fetch --unshallow --tags --force origin || git fetch --tags --force origin || true; fi
+# BuildKit also makes a tag named after the ref it cloned, which would hide the real version from git describe;
+# that one is removed first (a real tag of that name comes back with the fetch).
+RUN if [ -d .git ]; then \
+      git tag -d "$INTERRUPT_STACK_REF" >/dev/null 2>&1 || true; \
+      git fetch --unshallow --tags --force origin || git fetch --tags --force origin || true; \
+    fi
 
 # The app icons are generated here and are not stored in git. Tests and the scripts are not needed at runtime
 # (an updated copy gets them back from git).
