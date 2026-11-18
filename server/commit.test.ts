@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveCommit } from "./commit";
+import { normalizeCommit, resolveCommit } from "./commit";
 
 const SHA = "0123456789abcdef0123456789abcdef01234567";
 const SHA2 = "fedcba9876543210fedcba9876543210fedcba98";
@@ -89,5 +89,15 @@ describe("write-version script", () => {
     expect(await Bun.file(join(root, "a.json")).json()).toEqual({ commit: SHA });
     expect(await run(join(root, "missing"), join(root, "b.json"))).toBe(0);
     expect(await Bun.file(join(root, "b.json")).json()).toEqual({ commit: null });
+  });
+});
+
+describe("normalizeCommit", () => {
+  test("accepts a commit id in either case and trims it", () => {
+    expect(normalizeCommit(SHA.toUpperCase() + "\n")).toBe(SHA);
+  });
+
+  test("rejects anything that is not a commit id", () => {
+    for (const bad of ["", "abc", "zzzz", SHA + "0", null, undefined, 42, {}]) expect(normalizeCommit(bad as any)).toBeNull();
   });
 });

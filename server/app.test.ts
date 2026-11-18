@@ -239,7 +239,7 @@ describe("version", () => {
     const res = await get("/version.js");
     expect(res.headers.get("content-type")).toContain("text/javascript");
     expect(res.headers.get("cache-control")).toBe("no-cache");
-    expect(await res.text()).toBe(`export const VERSION = "${await versionOf(app)}";\nexport const COMMIT = null;\n`);
+    expect(await res.text()).toBe(`export const VERSION = "${await versionOf(app)}";\nexport const COMMIT = null;\nexport const LABEL = null;\n`);
   });
 
   test("the version is stable for unchanged files and changes when a shipped file changes", async () => {
@@ -288,5 +288,60 @@ describe("commit in /version.js", () => {
     const text = await (await a.fetch(new Request("http://t/version.js"))).text();
     expect(text).toContain(`export const COMMIT = "${sha}";`);
     expect(text).toContain("export const VERSION = ");
+  });
+});
+
+describe("version label and update check", () => {
+  const SHA = "0123456789abcdef0123456789abcdef01234567";
+  const fakeChecker = (available: object | null = null) => {
+    const calls: number[] = [];
+    return {
+      calls,
+      checker: {
+        request: () => void calls.push(1),
+        state: () => ({ enabled: true, ref: "main", checkedAt: 123, available }),
+      },
+    };
+  };
+  const post = (a: ReturnType<typeof createApp>, path: string) => a.fetch(new Request(`http://t${path}`, { method: "POST" }));
+
+  test("/version.js and /api/version carry the label", async () => {
+    const a = createApp(store, { webDir: dir, commit: SHA, label: "v1.2.0-3-g0123456" });
+    expect(await (await a.fetch(new Request("http://t/version.js"))).text()).toContain('export const LABEL = "v1.2.0-3-g0123456";');
+    expect((await (await a.fetch(new Request("http://t/api/version"))).json()).label).toBe("v1.2.0-3-g0123456");
+  });
+
+  test("/api/version says what the update checker knows", async () => {
+    const { checker } = fakeChecker({ commit: "f".repeat(40), short: "fffffff", ref: "main" });
+    const a = createApp(store, { webDir: dir, commit: SHA, updateChecker: checker });
+    const body = await (await a.fetch(new Request("http://t/api/version"))).json();
+    expect(body.update).toEqual({ enabled: true, ref: "main", checkedAt: 123, available: { commit: "f".repeat(40), short: "fffffff", ref: "main" } });
+  });
+
+  test("without an update checker /api/version says updating is not enabled", async () => {
+    const body = await (await get("/api/version")).json();
+    expect(body.update).toEqual({ enabled: false, ref: null, checkedAt: null, available: null });
+  });
+
+  test("POST /api/update-check starts a check and answers at once with 202", async () => {
+    const { checker, calls } = fakeChecker();
+    const a = createApp(store, { webDir: dir, updateChecker: checker });
+    const res = await post(a, "/api/update-check");
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ checking: true });
+    expect(calls).toHaveLength(1);
+  });
+
+  test("POST /api/update-check without a checker is a harmless 200", async () => {
+    const res = await post(app, "/api/update-check");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ checking: false });
+  });
+
+  test("only POST is accepted, and the route has its own metrics label", async () => {
+    expect((await get("/api/update-check")).status).toBe(404);
+    await post(app, "/api/update-check");
+    const text = await (await get("/metrics")).text();
+    expect(text).toContain('route="/api/update-check",method="POST",code="200"');
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { forceRefresh, updateAvailable } from "./refresh.js";
+import { describeServerUpdate, forceRefresh, readVersionInfo, requestServerCheck, updateAvailable } from "./refresh.js";
 
 // Fakes record what happened, in order, so a test can assert both what was touched and what was left alone.
 function env({ fetchImpl, cacheNames = ["interrupt-stack-v2", "old-cache"], registrations = 1, deleteFails = false, noApis = false } = {}) {
@@ -117,5 +117,50 @@ describe("update check", () => {
     let seen;
     await updateAvailable({ fetch: async (...a) => ((seen = a), json({ version: "x" })), current: "y" });
     expect(seen).toEqual(["/api/version", { cache: "no-store" }]);
+  });
+});
+
+describe("server update notice", () => {
+  const info = (update) => ({ version: "v", commit: null, label: null, update });
+
+  test("describeServerUpdate says nothing unless GitHub has something different", () => {
+    expect(describeServerUpdate(null)).toBeNull();
+    expect(describeServerUpdate({})).toBeNull();
+    expect(describeServerUpdate(info({ enabled: true, available: null }))).toBeNull();
+    expect(describeServerUpdate(info({ enabled: false, available: { ref: "main", short: "abc1234" } }))).toBeNull();
+  });
+
+  test("describeServerUpdate names the ref and the short commit", () => {
+    const text = describeServerUpdate(info({ enabled: true, available: { ref: "main", short: "abc1234", commit: "abc1234".padEnd(40, "0") } }));
+    expect(text).toContain("main");
+    expect(text).toContain("abc1234");
+  });
+
+  test("requestServerCheck POSTs to /api/update-check and does not wait on the answer being useful", async () => {
+    let seen;
+    await requestServerCheck({ fetch: async (...a) => ((seen = a), { ok: true }) });
+    expect(seen[0]).toBe("/api/update-check");
+    expect(seen[1]).toMatchObject({ method: "POST", keepalive: true });
+  });
+
+  test("requestServerCheck swallows every failure", async () => {
+    await requestServerCheck({ fetch: async () => { throw new TypeError("down"); } });
+    await requestServerCheck({ fetch: () => { throw new Error("sync throw"); } });
+  });
+
+  test("readVersionInfo returns the parsed answer, or null when it cannot", async () => {
+    const ok = { ok: true, redirected: false, json: async () => ({ version: "x" }) };
+    expect(await readVersionInfo({ fetch: async () => ok })).toEqual({ version: "x" });
+    expect(await readVersionInfo({ fetch: async () => ({ ...ok, redirected: true }) })).toBeNull();
+    expect(await readVersionInfo({ fetch: async () => ({ ...ok, ok: false }) })).toBeNull();
+    expect(await readVersionInfo({ fetch: async () => { throw new TypeError("x"); } })).toBeNull();
+    expect(await readVersionInfo({ fetch: async () => ({ ...ok, json: async () => { throw new SyntaxError("x"); } }) })).toBeNull();
+    expect(await readVersionInfo({ fetch: async () => ({ ...ok, json: async () => null }) })).toBeNull();
+  });
+
+  test("readVersionInfo uses the URL it is given without caching", async () => {
+    let seen;
+    await readVersionInfo({ fetch: async (...a) => ((seen = a), { ok: true, redirected: false, json: async () => ({}) }), url: "version.json" });
+    expect(seen).toEqual(["version.json", { cache: "no-store" }]);
   });
 });

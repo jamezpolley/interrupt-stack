@@ -1,7 +1,7 @@
 import { createSync } from "./sync.js";
 import { openStorage } from "./idb.js";
 import { createEventStream } from "./events.js";
-import { forceRefresh, updateAvailable } from "./refresh.js";
+import { describeServerUpdate, forceRefresh, readVersionInfo, requestServerCheck } from "./refresh.js";
 import { completedToday } from "./today.js";
 import { LOCAL_ONLY } from "./config.js";
 
@@ -174,6 +174,9 @@ function showRefreshMessage(text) {
 }
 
 async function refreshApp() {
+  // Also ask the server to look at GitHub, in the background. It does not delay the refresh: the answer arrives
+  // in /api/version and is shown by the next version check.
+  if (!LOCAL_ONLY) requestServerCheck({ fetch: (p, i) => fetch(p, i) });
   const buttons = [$("refresh-btn"), $("update-btn")];
   buttons.forEach((b) => (b.disabled = true));
   showRefreshMessage("Refreshing...");
@@ -200,7 +203,12 @@ function setUpInstall() {
 async function init() {
   // What this copy of the app was built from (cached with the app). A server without /version.js has none.
   const build = await import("./version.js").catch(() => null);
-  $("version").textContent = typeof build?.COMMIT === "string" ? build.COMMIT.slice(0, 7) : "version unknown";
+  $("version").textContent =
+    typeof build?.LABEL === "string" && build.LABEL
+      ? build.LABEL
+      : typeof build?.COMMIT === "string"
+        ? build.COMMIT.slice(0, 7)
+        : "version unknown";
   setUpInstall();
   let storage;
   try {
@@ -241,8 +249,15 @@ async function init() {
 
   const current = build?.VERSION ?? null; // no version means no update check
   const checkForUpdate = async () => {
-    const newer = await updateAvailable({ fetch: (p, i) => fetch(p, i), current, url: VERSION_URL });
+    const info = await readVersionInfo({ fetch: (p, i) => fetch(p, i), url: VERSION_URL });
+    // Unknown (server unreachable, sign-in redirect) leaves the banners as they were.
+    const newer = current && typeof info?.version === "string" && info.version ? info.version !== current : null;
     if (newer !== null) $("update").hidden = !newer;
+    if (info) {
+      const notice = LOCAL_ONLY ? null : describeServerUpdate(info);
+      $("server-update").textContent = notice ?? "";
+      $("server-update").hidden = !notice;
+    }
   };
 
   await sync.start();
