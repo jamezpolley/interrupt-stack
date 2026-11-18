@@ -38,6 +38,16 @@ Settings below come from Dockhand's manual (https://dockhand.pro/manual, read 20
 
 Not covered by the manual: whether a webhook-triggered run applies the build option. Check on your first webhook deploy.
 
+## Which version is running
+
+The first line of the container log names the commit it was built from:
+
+```
+interrupt-stack commit 9b41b5ca5b69 listening on :9958, data in /data
+```
+
+`GET /api/version` returns the full commit as well (`{"version": "<web files hash>", "commit": "<40 hex>"}`). The image build reads the commit from the `.git` directory in its build context (no git binary needed; the history is not copied into the image). If the context has no `.git`, the build still succeeds and the log says `commit unknown`. When running from a checkout with `bun server/main.ts`, it reads the commit from the checkout's `.git`.
+
 ## Pangolin labels
 
 `compose.yaml` carries `pangolin.public-resources.interrupt-stack.*` labels. Two values come from the stack's environment; leave them unset if you do not use Pangolin:

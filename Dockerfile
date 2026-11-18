@@ -1,3 +1,13 @@
+# Stage 1 records which commit the build context is on. Only the small result is copied into the final image, so
+# the repository history never ends up in it. .git is optional: the glob matches nothing when the build context
+# has no .git, the build carries on, and the running server reports its commit as unknown.
+FROM oven/bun:1 AS version
+WORKDIR /src
+COPY server/commit.ts ./server/commit.ts
+COPY scripts/write-version.ts ./scripts/write-version.ts
+COPY .gi[t]/ ./.git/
+RUN bun scripts/write-version.ts .git /build-info.json
+
 FROM oven/bun:1
 
 WORKDIR /app
@@ -10,6 +20,8 @@ COPY scripts/ ./scripts/
 RUN bun scripts/make-icons.ts \
  && rm -rf scripts server/*.test.ts web/*.test.js \
  && mkdir -p /data && chown bun:bun /data
+
+COPY --from=version /build-info.json ./build-info.json
 
 ENV PORT=9958 DATA_DIR=/data
 VOLUME /data

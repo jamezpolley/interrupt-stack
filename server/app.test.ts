@@ -264,3 +264,19 @@ describe("version", () => {
     expect(text).toContain('interrupt_stack_http_requests_total{route="/api/version",method="GET",code="200"} 1');
   });
 });
+
+describe("commit in /api/version", () => {
+  const withCommit = (commit?: string | null) => createApp(store, { webDir: dir, commit });
+  const ask = async (a: ReturnType<typeof createApp>) => (await a.fetch(new Request("http://t/api/version"))).json();
+
+  test("reports the commit the server was built from", async () => {
+    expect((await ask(withCommit("0123456789abcdef0123456789abcdef01234567"))).commit).toBe("0123456789abcdef0123456789abcdef01234567");
+  });
+
+  test("reports null when the commit is unknown, and still reports the web version", async () => {
+    const body = await ask(withCommit(null));
+    expect(body.commit).toBeNull();
+    expect(body.version).toMatch(/^[0-9a-f]{12}$/);
+    expect((await ask(withCommit())).commit).toBeNull();
+  });
+});

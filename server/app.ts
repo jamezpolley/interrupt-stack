@@ -36,7 +36,7 @@ function webVersion(root: string): string {
   return hash.digest("hex").slice(0, 12);
 }
 
-export function createApp(store: Store, opts: { webDir: string }) {
+export function createApp(store: Store, opts: { webDir: string; commit?: string | null }) {
   const root = resolve(opts.webDir);
   const version = webVersion(root);
   const streams = new Set<ReadableStreamDefaultController<Uint8Array>>();
@@ -174,7 +174,7 @@ export function createApp(store: Store, opts: { webDir: string }) {
       return json({ ...store.since(Number.isSafeInteger(n) && n > 0 ? n : 0), epoch: store.epoch });
     }
     if (pathname === "/api/version" && req.method === "GET") {
-      return new Response(JSON.stringify({ version }), { headers: { "content-type": "application/json", "cache-control": "no-store" } });
+      return new Response(JSON.stringify({ version, commit: opts.commit ?? null }), { headers: { "content-type": "application/json", "cache-control": "no-store" } });
     }
     // Cached with the rest of the app, so each device keeps the version its own files were built from.
     if (pathname === "/version.js" && req.method === "GET") {
