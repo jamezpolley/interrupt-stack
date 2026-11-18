@@ -27,7 +27,7 @@ export function createApp(store: Store, opts: { webDir: string }) {
 
   // Route labels come from a fixed set so a scanner hitting random paths cannot grow the metric series.
   function routeLabel(pathname: string): string {
-    if (pathname === "/healthz" || pathname === "/metrics" || pathname === "/api/events" || pathname === "/api/items" || pathname === "/api/log") return pathname;
+    if (pathname === "/healthz" || pathname === "/metrics" || pathname === "/api/events" || pathname === "/api/items") return pathname;
     if (/^\/api\/items\/[^/]+$/.test(pathname)) return "/api/items/:id";
     return pathname.startsWith("/api/") ? "/api/other" : "static";
   }
@@ -122,15 +122,6 @@ export function createApp(store: Store, opts: { webDir: string }) {
     }
   }
 
-  // One JSON object per line, oldest first, with times as ISO-8601 UTC strings so the file reads without a converter.
-  function logResponse(): Response {
-    const body = store
-      .log()
-      .map((e) => JSON.stringify({ ...e, ts: new Date(e.ts).toISOString(), at: new Date(e.at).toISOString() }) + "\n")
-      .join("");
-    return new Response(body, { headers: { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store" } });
-  }
-
   async function serveStatic(pathname: string): Promise<Response> {
     let rel: string;
     try {
@@ -164,7 +155,6 @@ export function createApp(store: Store, opts: { webDir: string }) {
       const n = Number(url.searchParams.get("since"));
       return json({ ...store.since(Number.isSafeInteger(n) && n > 0 ? n : 0), epoch: store.epoch });
     }
-    if (pathname === "/api/log" && req.method === "GET") return logResponse();
     const m = pathname.match(/^\/api\/items\/([^/]+)$/);
     if (m && req.method === "PUT") return putItem(decodeURIComponent(m[1]), req);
     if (pathname.startsWith("/api/")) return json({ error: "not found" }, 404);

@@ -15,11 +15,10 @@ shape only: no interop, no import or export of its format.
 - Every push, pop and restore is recorded durably, surviving server restarts and redeploys.
 - Each event carries when it happened on the device (`at`) and when the server recorded it (`ts`), because devices
   go offline and sync later.
-- The log is readable as jsonl, oldest first, for analysis with `jq`, DuckDB or a script.
 
 ## Non-goals
 
-- No analysis UI, and no time-per-task calculation in the app.
+- No analysis, no read endpoint, and no time-per-task calculation: all later.
 - No import or export in any other format, no backfill of history from before this ships.
 - No change to how devices sync or to the stack the person sees.
 
@@ -63,9 +62,8 @@ change. That is a known limit of the log.
 **Clock guard:** an `at` later than the server's clock is clamped to the server's clock, not rejected. Rejecting
 would leave an item stuck in a permanent sync error on a phone whose clock runs ahead.
 
-**`GET /api/log`:** `application/x-ndjson`, one event per line, oldest first, e.g.
-`{"n":1,"ts":"2026-11-18T01:02:03.000Z","at":"2026-11-18T01:01:50.000Z","op":"push","id":"s-abc123","text":"bank rec"}`.
-Times are ISO-8601 UTC strings. Behind the same access as the rest of the API; no new auth.
+**No read endpoint.** An earlier draft served the log as jsonl at `GET /api/log`. James dropped it (2026-11-18):
+analysis is a later step, so the log is only recorded for now. `Store.log()` exists for tests.
 
 ## Left to the builder
 

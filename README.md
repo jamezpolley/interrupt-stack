@@ -59,38 +59,17 @@ Enter the values as plain text, with nothing after them. In Dockhand's variables
 - Conflicts resolve by arrival: the last change the server receives for an item wins, not the change made last. If a device was offline when it removed an item and reconnects after another device restored it, the older removal wins. Both devices then show the same thing.
 - A change the server refuses (a 4xx response) stays on the device and shows as "Sync problem" without blocking other changes. If the device's own storage fails, it says so and keeps working from memory.
 
-API (JSON): `GET /api/items?since=<seq>`, `PUT /api/items/<id>`, `GET /api/events` (event stream), `GET /api/log` (event log, below), `GET /healthz`.
+API (JSON): `GET /api/items?since=<seq>`, `PUT /api/items/<id>`, `GET /api/events` (event stream), `GET /healthz`.
 
 ## The event log
 
-The server records every push, pop and restore in an append-only `events` table in the same SQLite database, written in the same transaction as the change to the item, and `GET /api/log` returns it as newline-delimited JSON, oldest first:
+The server records every push, pop and restore in an append-only `events` table in the same SQLite database (`/data/stack.db`), written in the same transaction as the change to the item. Columns: `n`, `ts` (when the server recorded it), `at` (when it happened, by the device's clock; both in ms since the epoch), `op`, `id`, `text`. Nothing reads it back yet.
 
-```
-{"n":1,"ts":"2026-11-18T01:02:03.000Z","at":"2026-11-18T01:01:50.000Z","op":"push","id":"s-lq3x9k2ab","text":"bank rec"}
-{"n":2,"ts":"2026-11-18T03:20:11.000Z","at":"2026-11-18T03:19:40.000Z","op":"pop","id":"s-lq3x9k2ab","text":"bank rec"}
-```
-
-- `at` is when it happened, by the device's clock. `ts` is when the server heard about it. They differ when a device was offline.
-- Resending an item the server already has in the same state adds nothing, so retries and re-syncs do not duplicate events.
-- A device only sends an item's latest state. If you push, pop and restore something offline, the server sees the net change, not each step.
-- A device time later than the server's clock is clamped to the server's clock (and one before 1970 to 1970), not refused, so a phone with a wrong clock cannot get stuck in a sync error. Its events are only as accurate as its clock.
-- Only changes made after this feature shipped are logged. Older items have no history.
-- Whichever change reaches the server last still wins (see above), so a device resending an older state, such as a retry after a lost response, can log a `restore` for an item another device popped. Its time is never earlier than the item's previous event, so one item's events always read forwards.
-
-Time on a task is the time it was on top of the stack, not push to pop: pushing B over A pauses A. Work that out from the log with a script. For a quick look, the minutes from each item's first push to its last pop (items with no push in the log, or not yet popped, are skipped):
-
-```sh
-curl -s https://<your-domain>/api/log | jq -s '
-  def secs: sub("\\.[0-9]+Z$"; "Z") | fromdate;
-  group_by(.id)
-  | map(select(any(.[]; .op == "push") and any(.[]; .op == "pop"))
-        | { text: .[0].text,
-            minutes: (((map(select(.op == "pop")) | last.at | secs) - (map(select(.op == "push")) | first.at | secs)) / 60) })'
-```
-
-(Behind SSO, fetch it from a signed-in browser or with your proxy's token.) The log has no authentication of its own, like the rest of the API.
-
-`GET /metrics` serves Prometheus metrics (text exposition format 0.0.4): `interrupt_stack_items{state}`, `interrupt_stack_seq`, `interrupt_stack_event_streams`, `interrupt_stack_start_time_seconds`, and `interrupt_stack_http_requests_total{route,method,code}`. Route labels come from a fixed set, so unknown paths all count as `static`. Like everything else here it has no authentication, so keep it behind the same access control.
+- Resending an item the server already has in the same state adds nothing.
+- A device only sends an item's latest state, so a push, pop and restore done offline between syncs shows up as the net change.
+- A device time later than the server's clock is clamped to it (and one before 1970 to 1970), not refused, so a phone with a wrong clock cannot get stuck in a sync error.
+- Whichever change reaches the server last wins, so a device resending an older state, such as a retry after a lost response, can log a `restore` for an item another device popped. Its time is never earlier than the item's previous event.
+- Only changes made after this feature shipped are logged.
 
 ## Develop
 
