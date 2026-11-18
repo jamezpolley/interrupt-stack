@@ -239,7 +239,7 @@ describe("version", () => {
     const res = await get("/version.js");
     expect(res.headers.get("content-type")).toContain("text/javascript");
     expect(res.headers.get("cache-control")).toBe("no-cache");
-    expect(await res.text()).toBe(`export const VERSION = "${await versionOf(app)}";\n`);
+    expect(await res.text()).toBe(`export const VERSION = "${await versionOf(app)}";\nexport const COMMIT = null;\n`);
   });
 
   test("the version is stable for unchanged files and changes when a shipped file changes", async () => {
@@ -278,5 +278,15 @@ describe("commit in /api/version", () => {
     expect(body.commit).toBeNull();
     expect(body.version).toMatch(/^[0-9a-f]{12}$/);
     expect((await ask(withCommit())).commit).toBeNull();
+  });
+});
+
+describe("commit in /version.js", () => {
+  test("carries the commit the server was built from, so a cached copy records what it is", async () => {
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    const a = createApp(store, { webDir: dir, commit: sha });
+    const text = await (await a.fetch(new Request("http://t/version.js"))).text();
+    expect(text).toContain(`export const COMMIT = "${sha}";`);
+    expect(text).toContain("export const VERSION = ");
   });
 });

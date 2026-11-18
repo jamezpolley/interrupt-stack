@@ -190,6 +190,9 @@ function setUpInstall() {
 }
 
 async function init() {
+  // What this copy of the app was built from (cached with the app). A server without /version.js has none.
+  const build = await import("./version.js").catch(() => null);
+  $("version").textContent = typeof build?.COMMIT === "string" ? build.COMMIT.slice(0, 7) : "version unknown";
   setUpInstall();
   let storage;
   try {
@@ -228,8 +231,7 @@ async function init() {
   $("refresh-btn").addEventListener("click", refreshApp);
   $("update-btn").addEventListener("click", refreshApp);
 
-  // The version this copy of the app was built from. A server without /version.js just means no update check.
-  const current = await import("./version.js").then((m) => m.VERSION).catch(() => null);
+  const current = build?.VERSION ?? null; // no version means no update check
   const checkForUpdate = async () => {
     const newer = await updateAvailable({ fetch: (p, i) => fetch(p, i), current });
     if (newer !== null) $("update").hidden = !newer;

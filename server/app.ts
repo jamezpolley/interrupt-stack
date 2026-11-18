@@ -178,7 +178,7 @@ export function createApp(store: Store, opts: { webDir: string; commit?: string 
     }
     // Cached with the rest of the app, so each device keeps the version its own files were built from.
     if (pathname === "/version.js" && req.method === "GET") {
-      return new Response(`export const VERSION = "${version}";\n`, {
+      return new Response(`export const VERSION = "${version}";\nexport const COMMIT = ${JSON.stringify(opts.commit ?? null)};\n`, {
         headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-cache" },
       });
     }
