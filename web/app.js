@@ -1,6 +1,7 @@
 import { createSync } from "./sync.js";
 import { openStorage } from "./idb.js";
 import { createEventStream } from "./events.js";
+import { forceRefresh, updateAvailable } from "./refresh.js";
 
 const $ = (id) => document.getElementById(id);
 const UNDO_MS = 15000;
@@ -132,6 +133,26 @@ async function undo() {
   await sync.restore(it.id);
 }
 
+const REFRESH_MESSAGES = {
+  unreachable: "Can't reach the server, so nothing was changed.",
+  "signed-out": "You may need to sign in again. Nothing was changed.",
+};
+
+async function refreshApp() {
+  const buttons = [$("refresh-btn"), $("update-btn")];
+  buttons.forEach((b) => (b.disabled = true));
+  $("refresh-msg").textContent = "Refreshing...";
+  const result = await forceRefresh({
+    fetch: (p, i) => fetch(p, i),
+    caches: window.caches,
+    serviceWorker: navigator.serviceWorker,
+    reload: () => location.reload(),
+  });
+  if (result.ok) return; // the page is reloading
+  $("refresh-msg").textContent = REFRESH_MESSAGES[result.reason] ?? REFRESH_MESSAGES.unreachable;
+  buttons.forEach((b) => (b.disabled = false));
+}
+
 function setUpInstall() {
   if (!window.isSecureContext) {
     showNote("This page was opened without HTTPS, so browsers will not install it or let it work offline. Open it through an https:// address.");
@@ -163,11 +184,21 @@ async function init() {
     inp.focus();
   });
   $("undo-btn").addEventListener("click", undo);
+  $("refresh-btn").addEventListener("click", refreshApp);
+  $("update-btn").addEventListener("click", refreshApp);
+
+  // The version this copy of the app was built from. A server without /version.js just means no update check.
+  const current = await import("./version.js").then((m) => m.VERSION).catch(() => null);
+  const checkForUpdate = async () => {
+    const newer = await updateAvailable({ fetch: (p, i) => fetch(p, i), current });
+    if (newer !== null) $("update").hidden = !newer;
+  };
 
   await sync.start();
   renderStatus(sync.status());
 
   const syncNow = () => sync.syncNow().catch(() => {});
+  checkForUpdate();
 
   // The stream reconnects itself (events.js). On iOS a stream can also look open after the app resumes from
   // the background while being dead, so it is recreated whenever the page becomes visible.
@@ -178,9 +209,16 @@ async function init() {
     if (document.visibilityState !== "visible") return;
     events.connect();
     syncNow();
+    checkForUpdate();
   });
-  addEventListener("online", syncNow);
-  setInterval(syncNow, 60000);
+  addEventListener("online", () => {
+    syncNow();
+    checkForUpdate();
+  });
+  setInterval(() => {
+    syncNow();
+    checkForUpdate();
+  }, 60000);
   setInterval(render, 30000);
 }
 

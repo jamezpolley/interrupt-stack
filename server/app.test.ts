@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "./app";
@@ -221,5 +221,46 @@ describe("event log", () => {
       ["push", 5],
       ["pop", 6],
     ]);
+  });
+});
+
+describe("version", () => {
+  const versionOf = async (a: ReturnType<typeof createApp>) =>
+    (await (await a.fetch(new Request("http://t/api/version"))).json()).version as string;
+
+  test("GET /api/version returns the version of the shipped web files, uncached", async () => {
+    const res = await get("/api/version");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect((await res.json()).version).toMatch(/^[0-9a-f]{12}$/);
+  });
+
+  test("/version.js is a module exporting the same version, so a cached copy records what the app was built from", async () => {
+    const res = await get("/version.js");
+    expect(res.headers.get("content-type")).toContain("text/javascript");
+    expect(res.headers.get("cache-control")).toBe("no-cache");
+    expect(await res.text()).toBe(`export const VERSION = "${await versionOf(app)}";\n`);
+  });
+
+  test("the version is stable for unchanged files and changes when a shipped file changes", async () => {
+    const before = await versionOf(app);
+    expect(await versionOf(createApp(store, { webDir: dir }))).toBe(before);
+    writeFileSync(join(dir, "app.js"), "export const changed = 1");
+    expect(await versionOf(createApp(store, { webDir: dir }))).not.toBe(before);
+  });
+
+  test("test files and files in subfolders are accounted for correctly", async () => {
+    const before = await versionOf(app);
+    writeFileSync(join(dir, "thing.test.js"), "// not shipped");
+    expect(await versionOf(createApp(store, { webDir: dir }))).toBe(before);
+    mkdirSync(join(dir, "icons"));
+    writeFileSync(join(dir, "icons", "a.png"), "png");
+    expect(await versionOf(createApp(store, { webDir: dir }))).not.toBe(before);
+  });
+
+  test("/api/version is counted under its own route label", async () => {
+    await get("/api/version");
+    const text = await (await get("/metrics")).text();
+    expect(text).toContain('interrupt_stack_http_requests_total{route="/api/version",method="GET",code="200"} 1');
   });
 });

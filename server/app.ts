@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
 import { resolve, sep, extname } from "node:path";
 import { ValidationError, type Store } from "./store";
 
@@ -19,15 +21,31 @@ const TYPES: Record<string, string> = {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
+// Identifies the web files this server ships, so a device running older copies can tell it is out of date.
+// Computed once at start: the files in the image do not change while it runs. Tests are not part of the app.
+function webVersion(root: string): string {
+  const hash = createHash("sha256");
+  const walk = (dir: string, prefix: string) => {
+    for (const e of readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+      const rel = prefix + e.name;
+      if (e.isDirectory()) walk(resolve(dir, e.name), rel + "/");
+      else if (!e.name.endsWith(".test.js")) hash.update(rel + "\0").update(readFileSync(resolve(dir, e.name))).update("\0");
+    }
+  };
+  walk(root, "");
+  return hash.digest("hex").slice(0, 12);
+}
+
 export function createApp(store: Store, opts: { webDir: string }) {
   const root = resolve(opts.webDir);
+  const version = webVersion(root);
   const streams = new Set<ReadableStreamDefaultController<Uint8Array>>();
   const startedAt = Math.floor(Date.now() / 1000);
   const requests = new Map<string, number>(); // `${route}|${method}|${code}` -> count
 
   // Route labels come from a fixed set so a scanner hitting random paths cannot grow the metric series.
   function routeLabel(pathname: string): string {
-    if (pathname === "/healthz" || pathname === "/metrics" || pathname === "/api/events" || pathname === "/api/items") return pathname;
+    if (pathname === "/healthz" || pathname === "/metrics" || pathname === "/api/events" || pathname === "/api/items" || pathname === "/api/version") return pathname;
     if (/^\/api\/items\/[^/]+$/.test(pathname)) return "/api/items/:id";
     return pathname.startsWith("/api/") ? "/api/other" : "static";
   }
@@ -154,6 +172,15 @@ export function createApp(store: Store, opts: { webDir: string }) {
     if (pathname === "/api/items" && req.method === "GET") {
       const n = Number(url.searchParams.get("since"));
       return json({ ...store.since(Number.isSafeInteger(n) && n > 0 ? n : 0), epoch: store.epoch });
+    }
+    if (pathname === "/api/version" && req.method === "GET") {
+      return new Response(JSON.stringify({ version }), { headers: { "content-type": "application/json", "cache-control": "no-store" } });
+    }
+    // Cached with the rest of the app, so each device keeps the version its own files were built from.
+    if (pathname === "/version.js" && req.method === "GET") {
+      return new Response(`export const VERSION = "${version}";\n`, {
+        headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-cache" },
+      });
     }
     const m = pathname.match(/^\/api\/items\/([^/]+)$/);
     if (m && req.method === "PUT") return putItem(decodeURIComponent(m[1]), req);

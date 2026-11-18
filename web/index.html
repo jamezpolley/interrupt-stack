@@ -31,6 +31,11 @@
 
   <p class="note" id="note" hidden></p>
 
+  <div class="update" id="update" hidden>
+    <span>A new version of the app is available.</span>
+    <button type="button" class="primary" id="update-btn">Refresh app</button>
+  </div>
+
   <section id="now-wrap" aria-live="polite"></section>
 
   <div class="toast" id="toast" hidden>
@@ -42,6 +47,10 @@
     <div class="label">Underneath, most recent first</div>
     <ol id="under"></ol>
   </section>
+  <footer>
+    <button type="button" class="quiet" id="refresh-btn">Refresh app</button>
+    <span id="refresh-msg" role="status"></span>
+  </footer>
 </main>
 <script type="module" src="/app.js"></script>
 </body>
