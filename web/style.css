@@ -122,3 +122,5 @@ button.icon:hover:not(:disabled){border-color:var(--line)}
 .done{display:flex;flex-direction:column;gap:8px}
 .done li{background:transparent;border-style:dashed;color:var(--muted)}
 .done .item-text{color:var(--muted)}
+.server-update{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.server-update button{min-height:36px;padding:4px 12px;font-size:.8125rem}

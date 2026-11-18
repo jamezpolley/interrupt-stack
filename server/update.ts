@@ -105,7 +105,7 @@ export type Supervised = {
 };
 
 const startServer = (dir: string, port: number) =>
-  Bun.spawn(["bun", join(dir, "server", "main.ts")], { cwd: dir, env: { ...process.env, PORT: String(port) }, stdout: "inherit", stderr: "inherit" });
+  Bun.spawn(["bun", join(dir, "server", "main.ts")], { cwd: dir, env: { ...process.env, PORT: String(port), INTERRUPT_STACK_SUPERVISED: "1" }, stdout: "inherit", stderr: "inherit" });
 
 async function becomesHealthy(child: ReturnType<typeof Bun.spawn>, port: number, windowMs: number): Promise<boolean> {
   const deadline = Date.now() + windowMs;

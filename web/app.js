@@ -1,7 +1,7 @@
 import { createSync } from "./sync.js";
 import { openStorage } from "./idb.js";
 import { createEventStream } from "./events.js";
-import { describeServerUpdate, forceRefresh, readVersionInfo, requestServerCheck } from "./refresh.js";
+import { canUpdateNow, describeServerUpdate, forceRefresh, readVersionInfo, requestServerCheck, updateServerNow } from "./refresh.js";
 import { completedToday } from "./today.js";
 import { LOCAL_ONLY } from "./config.js";
 
@@ -175,6 +175,33 @@ function showRefreshMessage(text) {
   refreshMessageTimer = setTimeout(() => (el.hidden = true), 8000);
 }
 
+let updatingServer = false;
+const UPDATE_NOW_MESSAGES = {
+  unavailable: "The server cannot update itself right now.",
+  refused: "The server refused to update.",
+  timeout: "The server did not come back within 90 seconds. Check the container.",
+};
+
+async function updateNow() {
+  updatingServer = true;
+  $("update-now-btn").disabled = true;
+  $("update-now-btn").hidden = true;
+  $("server-update-text").textContent = "Updating the server. This page reloads when it is back.";
+  const result = await updateServerNow({
+    fetch: (p, i) => fetch(p, i),
+    forceRefresh: () =>
+      forceRefresh({ checkUrl: VERSION_URL, fetch: (p, i) => fetch(p, i), caches: window.caches, serviceWorker: navigator.serviceWorker, reload: () => location.reload() }),
+  });
+  if (result.ok) return; // the page is reloading
+  updatingServer = false;
+  $("update-now-btn").disabled = false;
+  $("server-update-text").textContent =
+    result.reason === "unchanged"
+      ? `The server restarted but is still on ${result.label ?? "the same version"}, so the update did not take. Check the container log.`
+      : (UPDATE_NOW_MESSAGES[result.reason] ?? UPDATE_NOW_MESSAGES.refused);
+  $("update-now-btn").hidden = false;
+}
+
 async function refreshApp() {
   // Also ask the server to look at GitHub, in the background. It does not delay the refresh: the answer arrives
   // in /api/version and is shown by the next version check.
@@ -253,6 +280,7 @@ async function init() {
   $("undo-btn").addEventListener("click", undo);
   $("refresh-btn").addEventListener("click", refreshApp);
   $("update-btn").addEventListener("click", refreshApp);
+  $("update-now-btn").addEventListener("click", updateNow);
 
   const current = build?.VERSION ?? null; // no version means no update check
   const checkForUpdate = async () => {
@@ -262,8 +290,11 @@ async function init() {
     if (newer !== null) $("update").hidden = !newer;
     if (info) {
       const notice = LOCAL_ONLY ? null : describeServerUpdate(info);
-      $("server-update").textContent = notice ?? "";
-      $("server-update").hidden = !notice;
+      if (!updatingServer) {
+        $("server-update-text").textContent = notice ?? "";
+        $("update-now-btn").hidden = !(notice && canUpdateNow(info));
+      }
+      $("server-update").hidden = !notice && !updatingServer;
     }
   };
 

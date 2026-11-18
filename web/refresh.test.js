@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { describeServerUpdate, forceRefresh, readVersionInfo, requestServerCheck, updateAvailable } from "./refresh.js";
+import { canUpdateNow, describeServerUpdate, forceRefresh, readVersionInfo, requestServerCheck, updateAvailable, updateServerNow } from "./refresh.js";
 
 // Fakes record what happened, in order, so a test can assert both what was touched and what was left alone.
 function env({ fetchImpl, cacheNames = ["interrupt-stack-v2", "old-cache"], registrations = 1, deleteFails = false, noApis = false } = {}) {
@@ -162,5 +162,97 @@ describe("server update notice", () => {
     let seen;
     await readVersionInfo({ fetch: async (...a) => ((seen = a), { ok: true, redirected: false, json: async () => ({}) }), url: "version.json" });
     expect(seen).toEqual(["version.json", { cache: "no-store" }]);
+  });
+});
+
+describe("update now", () => {
+  const A = "a".repeat(40), B = "b".repeat(40);
+  const info = (extra = {}) => ({ version: "v", commit: A, label: "aaaaaaa", startedAt: 1000, update: { enabled: true, restartable: true, available: { ref: "main", short: "bbbbbbb", commit: B } }, ...extra });
+  const ok = (body) => ({ ok: true, redirected: false, status: 200, json: async () => body });
+
+  test("canUpdateNow needs updating enabled, a restart possible, and something different on GitHub", () => {
+    expect(canUpdateNow(info())).toBe(true);
+    expect(canUpdateNow(null)).toBe(false);
+    expect(canUpdateNow(info({ update: { enabled: true, restartable: false, available: { ref: "main" } } }))).toBe(false);
+    expect(canUpdateNow(info({ update: { enabled: true, restartable: true, available: null } }))).toBe(false);
+    expect(canUpdateNow(info({ update: { enabled: false, restartable: true, available: { ref: "main" } } }))).toBe(false);
+  });
+
+  // A scripted server: the first reply is the state before, then the POST, then whatever the polls should see.
+  const scripted = ({ post = () => ({ ok: true, status: 202 }), polls = [] }) => {
+    const calls = [];
+    const queue = [...polls];
+    return {
+      calls,
+      fetch: async (url, init) => {
+        calls.push(`${init?.method ?? "GET"} ${url}`);
+        if (init?.method === "POST") {
+          const r = post();
+          if (r instanceof Error) throw r;
+          return r;
+        }
+        if (calls.filter((c) => c.startsWith("GET")).length === 1) return ok(info());
+        const next = queue.length > 1 ? queue.shift() : queue[0];
+        if (next instanceof Error) throw next;
+        return ok(next);
+      },
+    };
+  };
+  const run = (server, extra = {}) => {
+    let t = 0;
+    const refreshed = [];
+    return {
+      refreshed,
+      done: updateServerNow({ fetch: server.fetch, forceRefresh: async () => void refreshed.push(1), sleep: async (ms) => void (t += ms), now: () => t, pollMs: 1000, timeoutMs: 20_000, ...extra }),
+    };
+  };
+
+  test("asks for the restart, waits through the outage, and refreshes once the server is back on new code", async () => {
+    const server = scripted({ polls: [new TypeError("down"), new TypeError("down"), info({ commit: B, startedAt: 2000 })] });
+    const r = run(server);
+    expect(await r.done).toEqual({ ok: true });
+    expect(server.calls.filter((c) => c === "POST /api/update")).toHaveLength(1);
+    expect(r.refreshed).toHaveLength(1);
+  });
+
+  test("a dropped connection on the POST itself still counts: the server may already be going down", async () => {
+    const server = scripted({ post: () => new TypeError("connection reset"), polls: [info({ commit: B, startedAt: 2000 })] });
+    const r = run(server);
+    expect(await r.done).toEqual({ ok: true });
+  });
+
+  test("a server that restarts but is still on the same commit is reported, and the page is not refreshed", async () => {
+    const server = scripted({ polls: [info({ startedAt: 2000 })] });
+    const r = run(server);
+    expect(await r.done).toMatchObject({ ok: false, reason: "unchanged", label: "aaaaaaa" });
+    expect(r.refreshed).toHaveLength(0);
+  });
+
+  test("a server that never comes back times out", async () => {
+    const server = scripted({ polls: [new TypeError("down")] });
+    const r = run(server);
+    expect(await r.done).toEqual({ ok: false, reason: "timeout" });
+    expect(r.refreshed).toHaveLength(0);
+  });
+
+  test("a server that answers but has not restarted yet is waited for, not mistaken for done", async () => {
+    const server = scripted({ polls: [info(), info(), info({ commit: B, startedAt: 2000 })] });
+    const r = run(server);
+    expect(await r.done).toEqual({ ok: true });
+  });
+
+  test("a refusal stops at once, with no polling", async () => {
+    const server = scripted({ post: () => ({ ok: false, status: 409 }) });
+    const r = run(server);
+    expect(await r.done).toEqual({ ok: false, reason: "refused" });
+    expect(server.calls).toEqual(["GET /api/version", "POST /api/update"]);
+  });
+
+  test("does nothing when the server says an update cannot be applied", async () => {
+    const calls = [];
+    const fetch = async (url, init) => (calls.push(`${init?.method ?? "GET"} ${url}`), ok(info({ update: { enabled: true, restartable: false, available: { ref: "main" } } })));
+    const r = await updateServerNow({ fetch, forceRefresh: async () => {}, sleep: async () => {}, now: () => 0 });
+    expect(r).toEqual({ ok: false, reason: "unavailable" });
+    expect(calls).toEqual(["GET /api/version"]);
   });
 });

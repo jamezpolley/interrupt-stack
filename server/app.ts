@@ -23,16 +23,28 @@ const json = (body: unknown, status = 200) =>
 
 type UpdateChecker = { request(): void; state(): UpdateState };
 
-export function createApp(store: Store, opts: { webDir: string; commit?: string | null; label?: string | null; updateChecker?: UpdateChecker }) {
+export function createApp(
+  store: Store,
+  opts: {
+    webDir: string;
+    commit?: string | null;
+    label?: string | null;
+    updateChecker?: UpdateChecker;
+    /** Present only when something will start the server again after it exits (the container's entrypoint). */
+    onRestart?: () => void;
+  },
+) {
   const root = resolve(opts.webDir);
   const version = webVersion(root);
   const streams = new Set<ReadableStreamDefaultController<Uint8Array>>();
   const startedAt = Math.floor(Date.now() / 1000);
+  const startedAtMs = Date.now();
+  let restarting = false;
   const requests = new Map<string, number>(); // `${route}|${method}|${code}` -> count
 
   // Route labels come from a fixed set so a scanner hitting random paths cannot grow the metric series.
   function routeLabel(pathname: string): string {
-    if (pathname === "/healthz" || pathname === "/metrics" || pathname === "/api/events" || pathname === "/api/items" || pathname === "/api/version" || pathname === "/api/update-check") return pathname;
+    if (pathname === "/healthz" || pathname === "/metrics" || pathname === "/api/events" || pathname === "/api/items" || pathname === "/api/version" || pathname === "/api/update-check" || pathname === "/api/update") return pathname;
     if (/^\/api\/items\/[^/]+$/.test(pathname)) return "/api/items/:id";
     return pathname.startsWith("/api/") ? "/api/other" : "static";
   }
@@ -165,7 +177,11 @@ export function createApp(store: Store, opts: { webDir: string; commit?: string 
           version,
           commit: opts.commit ?? null,
           label: opts.label ?? null,
-          update: opts.updateChecker?.state() ?? { enabled: false, ref: null, checkedAt: null, available: null },
+          startedAt: startedAtMs,
+          update: {
+            ...(opts.updateChecker?.state() ?? { enabled: false, ref: null, checkedAt: null, available: null }),
+            restartable: !!opts.onRestart,
+          },
         }), { headers: { "content-type": "application/json", "cache-control": "no-store" } });
     }
     // Cached with the rest of the app, so each device keeps the version its own files were built from.
@@ -179,6 +195,18 @@ export function createApp(store: Store, opts: { webDir: string; commit?: string 
       if (!opts.updateChecker) return json({ checking: false });
       opts.updateChecker.request();
       return json({ checking: true }, 202);
+    }
+    // Restart so the container's entrypoint picks up the newer code. Only when something will bring the server back,
+    // and only when GitHub holds a different commit. The answer goes out first; the process goes a moment later.
+    if (pathname === "/api/update" && req.method === "POST") {
+      const state = opts.updateChecker?.state();
+      if (!opts.onRestart) return json({ restarting: false, reason: "not supervised: nothing would start the server again" }, 409);
+      if (!state?.enabled || !state.available) return json({ restarting: false, reason: "nothing different on GitHub" }, 409);
+      if (!restarting) {
+        restarting = true;
+        setTimeout(() => opts.onRestart!(), 500);
+      }
+      return json({ restarting: true }, 202);
     }
     const m = pathname.match(/^\/api\/items\/([^/]+)$/);
     if (m && req.method === "PUT") return putItem(decodeURIComponent(m[1]), req);

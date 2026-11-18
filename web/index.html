@@ -40,7 +40,10 @@
 
   <p class="note" id="note" hidden></p>
   <p class="note quiet-note" id="refresh-msg" role="status" hidden></p>
-  <p class="note quiet-note" id="server-update" role="status" hidden></p>
+  <p class="note quiet-note server-update" id="server-update" role="status" hidden>
+    <span id="server-update-text"></span>
+    <button type="button" class="primary" id="update-now-btn" hidden>Update now</button>
+  </p>
 
   <div class="update" id="update" hidden>
     <span>A new version of the app is available.</span>

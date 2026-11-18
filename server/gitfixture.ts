@@ -23,7 +23,7 @@ export const FAKE_SERVER = `
 const marker = (await Bun.file(import.meta.dir + "/../marker.txt").text()).trim();
 if (marker.startsWith("crash")) process.exit(1);
 if (marker.startsWith("hang")) { setInterval(() => {}, 1000); } else {
-  Bun.serve({ port: Number(process.env.PORT), fetch: (r) => new Response(new URL(r.url).pathname === "/healthz" ? "ok " + marker : "no") });
+  Bun.serve({ port: Number(process.env.PORT), fetch: (r) => { const p = new URL(r.url).pathname; return new Response(p === "/healthz" ? "ok " + marker : p === "/supervised" ? String(process.env.INTERRUPT_STACK_SUPERVISED) : "no"); } });
 }
 `;
 export const FAKE_ICONS = `

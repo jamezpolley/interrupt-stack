@@ -189,6 +189,21 @@ describe("supervise", () => {
     }
   });
 
+  test("the server is told it is supervised, so it knows a restart will bring it back", async () => {
+    for (const update of [true, false]) {
+      const f = fixture();
+      f.commit("v2");
+      const port = nextPort; // `run` takes the next port
+      const { s, body } = await run(f, { update });
+      try {
+        await body(); // wait until it is up
+        expect(await (await fetch(`http://127.0.0.1:${port}/supervised`)).text()).toBe("1");
+      } finally {
+        s.child.kill();
+      }
+    }
+  });
+
   test("with updating switched off the baked code runs and GitHub is not consulted", async () => {
     const f = fixture();
     f.commit("v2");

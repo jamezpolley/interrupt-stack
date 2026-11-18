@@ -62,3 +62,35 @@ export function describeServerUpdate(info) {
   if (!update?.enabled || !update.available) return null;
   return `GitHub's ${update.available.ref} is now at ${update.available.short}. Redeploy or restart to apply.`;
 }
+
+// Can this server restart itself to apply an update right now?
+export function canUpdateNow(info) {
+  const u = info?.update;
+  return !!(u?.enabled && u.restartable && u.available);
+}
+
+// Asks the server to restart onto the newer code, waits for it to come back, then refreshes this page. The server
+// is considered restarted when its start time changes. If it comes back on the same commit the update did not take
+// (the new code failed, or it is blocked), and the caller is told rather than the page being refreshed for nothing.
+export async function updateServerNow({ fetch, forceRefresh, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), now = () => Date.now(), pollMs = 2000, timeoutMs = 90_000 }) {
+  const before = await readVersionInfo({ fetch });
+  if (!canUpdateNow(before)) return { ok: false, reason: "unavailable" };
+  try {
+    const res = await fetch("/api/update", { method: "POST" });
+    if (!res.ok) return { ok: false, reason: "refused" };
+  } catch {} // a dropped connection here may just be the server already going down
+
+  const deadline = now() + timeoutMs;
+  while (now() < deadline) {
+    await sleep(pollMs);
+    const info = await readVersionInfo({ fetch });
+    if (info && typeof info.startedAt === "number" && info.startedAt !== before.startedAt) {
+      if (info.commit !== before.commit || info.label !== before.label) {
+        await forceRefresh();
+        return { ok: true };
+      }
+      return { ok: false, reason: "unchanged", label: info.label ?? null };
+    }
+  }
+  return { ok: false, reason: "timeout" };
+}
