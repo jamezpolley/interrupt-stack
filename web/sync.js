@@ -6,7 +6,7 @@
 const permanentlyRejected = (status) => status >= 400 && status < 500 && status !== 408 && status !== 429;
 
 export function createSync({ storage, fetch, now = () => Date.now(), onChange = () => {}, onStatus = () => {} }) {
-  const items = new Map(); // id -> {id, text, ts, removed, seq}
+  const items = new Map(); // id -> {id, text, ts, at, removed, seq}; `at` is when it last changed state, on this device's clock
   const dirty = new Set(); // ids with changes the server has not acknowledged
   let lastSeq = 0;
   let epoch = null; // identifies the server database we last synced with
@@ -53,7 +53,7 @@ export function createSync({ storage, fetch, now = () => Date.now(), onChange = 
         const res = await fetch(`/api/items/${encodeURIComponent(id)}`, {
           method: "PUT",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ text: sent.text, ts: sent.ts, removed: sent.removed }),
+          body: JSON.stringify({ text: sent.text, ts: sent.ts, removed: sent.removed, at: sent.at }),
         });
         if (permanentlyRejected(res.status)) {
           rejected.add(id); // keep it, but do not let it block the rest of the queue
@@ -155,19 +155,19 @@ export function createSync({ storage, fetch, now = () => Date.now(), onChange = 
       if (!trimmed) return null;
       const ts = now();
       const id = `s-${ts.toString(36)}${Math.random().toString(36).slice(2, 6).padEnd(4, "0")}`;
-      const item = { id, text: trimmed, ts, removed: false, seq: 0 };
+      const item = { id, text: trimmed, ts, at: ts, removed: false, seq: 0 };
       await setItem(item);
       return item;
     },
 
     async remove(id) {
       const it = items.get(id);
-      if (it && !it.removed) await setItem({ ...it, removed: true });
+      if (it && !it.removed) await setItem({ ...it, removed: true, at: now() });
     },
 
     async restore(id) {
       const it = items.get(id);
-      if (it && it.removed) await setItem({ ...it, removed: false });
+      if (it && it.removed) await setItem({ ...it, removed: false, at: now() });
     },
 
     syncNow,

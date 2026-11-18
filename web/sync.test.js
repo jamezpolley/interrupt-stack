@@ -391,3 +391,71 @@ describe("local storage failure", () => {
   });
 });
 
+
+describe("event log from the client", () => {
+  // The in-process server uses the real clock, so the client clock must sit in the past or it would be clamped.
+  const base = Date.now() - 10 * 60_000;
+  const clock = () => {
+    const c = { t: base };
+    c.now = () => c.t;
+    return c;
+  };
+  const log = (w) => w.server.current.store.log();
+
+  test("push, remove and restore reach the log in order, stamped with the device's clock", async () => {
+    const w = world();
+    const c = clock();
+    const a = w.mkClient({ now: c.now });
+    await a.sync.start();
+    const item = await a.sync.push("write report");
+    await a.sync.syncNow();
+    c.t = base + 30_000;
+    await a.sync.remove(item.id);
+    await a.sync.syncNow();
+    c.t = base + 45_000;
+    await a.sync.restore(item.id);
+    await a.sync.syncNow();
+    expect(log(w).map((e) => [e.op, e.at])).toEqual([
+      ["push", base],
+      ["pop", base + 30_000],
+      ["restore", base + 45_000],
+    ]);
+  });
+
+  test("a pop made offline is logged with the time it happened, not the time it synced", async () => {
+    const w = world();
+    const c = clock();
+    const a = w.mkClient({ now: c.now });
+    await a.sync.start();
+    const item = await a.sync.push("phone call");
+    await a.sync.syncNow();
+    a.ctl.online = false;
+    c.t = base + 120_000;
+    await a.sync.remove(item.id);
+    await a.sync.syncNow();
+    expect(log(w).map((e) => e.op)).toEqual(["push"]);
+    a.ctl.online = true;
+    await a.sync.syncNow();
+    const pop = log(w)[1];
+    expect(pop.op).toBe("pop");
+    expect(pop.at).toBe(base + 120_000);
+    expect(pop.ts).toBeGreaterThan(pop.at);
+  });
+
+  test("items resent to a replaced server keep their original event times", async () => {
+    const w = world();
+    const c = clock();
+    const a = w.mkClient({ now: c.now });
+    await a.sync.start();
+    const item = await a.sync.push("survives a rebuild");
+    c.t = base + 50_000;
+    await a.sync.remove(item.id);
+    await a.sync.syncNow();
+    w.server.current = newServer();
+    await a.sync.syncNow();
+    expect(log(w).map((e) => [e.op, e.at])).toEqual([
+      ["push", base],
+      ["pop", base + 50_000],
+    ]);
+  });
+});
