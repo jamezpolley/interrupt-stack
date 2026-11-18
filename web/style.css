@@ -60,6 +60,10 @@ h1{margin:0;font-size:1.25rem;font-weight:600;text-wrap:balance}
 .dot.ok{background:var(--accent)}
 .dot.warn{background:var(--warn)}
 form{display:flex;gap:8px;flex-wrap:wrap}
+.split{display:flex;flex:none}
+.split button{border-radius:0}
+.split button:first-child{border-radius:8px 0 0 8px}
+.split button:last-child{border-radius:0 8px 8px 0;border-color:var(--accent);color:var(--accent);margin-left:-1px}
 form input[type=text]{flex:1 1 12rem}
 input[type=text]{
   flex:1;min-width:0;

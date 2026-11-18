@@ -26,8 +26,10 @@
 
   <form id="push-form" autocomplete="off">
     <input type="text" id="push-input" maxlength="200" placeholder="What are you starting now?" aria-label="New task to push onto the stack">
-    <button type="submit" class="primary" id="push-btn">Push</button>
-    <button type="button" id="swap-btn" title="Pop the current task, then push this one" aria-label="Pop the current task, then push this one" disabled>Pop &amp; push</button>
+    <span class="split">
+      <button type="submit" class="primary" id="push-btn">Push</button>
+      <button type="button" id="swap-btn" title="Push this, and pop the current task" aria-label="Push this, and pop the current task" disabled>&amp; Pop</button>
+    </span>
   </form>
 
   <p class="note" id="note" hidden></p>
