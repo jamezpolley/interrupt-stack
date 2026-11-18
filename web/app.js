@@ -159,6 +159,8 @@ async function undo() {
 // version, a version.json written beside the app by the build (relative, so it works under any path).
 const VERSION_URL = LOCAL_ONLY ? "version.json" : "/api/version";
 
+const CHECK_REQUESTED = "interrupt-stack-check-requested";
+
 const REFRESH_MESSAGES = {
   unreachable: "Can't reach the server, so nothing was changed.",
   "signed-out": "You may need to sign in again. Nothing was changed.",
@@ -176,7 +178,12 @@ function showRefreshMessage(text) {
 async function refreshApp() {
   // Also ask the server to look at GitHub, in the background. It does not delay the refresh: the answer arrives
   // in /api/version and is shown by the next version check.
-  if (!LOCAL_ONLY) requestServerCheck({ fetch: (p, i) => fetch(p, i) });
+  if (!LOCAL_ONLY) {
+    requestServerCheck({ fetch: (p, i) => fetch(p, i) });
+    try {
+      sessionStorage.setItem(CHECK_REQUESTED, "1"); // so the reloaded page looks for the answer a few times
+    } catch {}
+  }
   const buttons = [$("refresh-btn"), $("update-btn")];
   buttons.forEach((b) => (b.disabled = true));
   showRefreshMessage("Refreshing...");
@@ -265,6 +272,13 @@ async function init() {
 
   const syncNow = () => sync.syncNow().catch(() => {});
   checkForUpdate();
+  // After a Refresh, the server was asked to look at GitHub just before the reload and may not have finished yet.
+  let followUp = false;
+  try {
+    followUp = sessionStorage.getItem(CHECK_REQUESTED) === "1";
+    sessionStorage.removeItem(CHECK_REQUESTED);
+  } catch {}
+  if (followUp) for (const ms of [1500, 4000, 9000]) setTimeout(checkForUpdate, ms);
 
   // The stream reconnects itself (events.js). On iOS a stream can also look open after the app resumes from
   // the background while being dead, so it is recreated whenever the page becomes visible.

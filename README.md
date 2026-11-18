@@ -76,7 +76,7 @@ With the repository set, the container does this every time it starts:
 
 Only the entrypoint (`server/entrypoint.ts`) always comes from the image; everything else can be the updated code. Limits: a crash after the 30 second window is an ordinary container restart (and could repeat); falling back runs older code against a database newer code may have changed, which is safe for additive changes; and whatever is on the ref on GitHub is what runs, so anyone who can push there controls the server.
 
-When the server starts without a repository set, it does not touch the network. With one set, the page's Refresh button also asks the server to look at GitHub in the background (at most once a minute, and it never delays the refresh). If the ref has moved past what is running, a note appears: "GitHub's main is now at abc1234. Redeploy or restart to apply." Restarting the container applies it, because the update happens at start.
+When the server starts without a repository set, it does not touch the network. With one set, the page's Refresh button also asks the server to look at GitHub in the background (at most once a minute, and it never delays the refresh; after the reload the page looks for the answer a few times over the next ten seconds). If the ref has moved past what is running, a note appears: "GitHub's main is now at abc1234. Redeploy or restart to apply." Restarting the container applies it, because the update happens at start.
 
 If your deployment tool builds from a checkout that has no `.git`, setting `INTERRUPT_STACK_REPO` is how the server gets a version.
 
