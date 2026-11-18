@@ -1,6 +1,18 @@
 services:
   interrupt-stack:
-    build: .
+    # Unset, the image is built from this repository's files, as always. To bake in a clone of GitHub with its .git
+    # (the server then knows its version from git and can update itself at start), set INTERRUPT_STACK_REPO to the
+    # clone URL; INTERRUPT_STACK_REF picks the branch or tag to follow (default main). See the README.
+    build:
+      context: .
+      args:
+        SOURCE: ${INTERRUPT_STACK_REPO:+git}
+        INTERRUPT_STACK_REPO: ${INTERRUPT_STACK_REPO:-}
+        INTERRUPT_STACK_REF: ${INTERRUPT_STACK_REF:-main}
+    environment:
+      INTERRUPT_STACK_REF: ${INTERRUPT_STACK_REF:-main}
+      # "off" never consults GitHub: the code in the image runs as it is.
+      INTERRUPT_STACK_UPDATE: ${INTERRUPT_STACK_UPDATE:-on}
     restart: unless-stopped
     # No host port is published, so nothing is reachable on the host's localhost.
     # Attach your reverse proxy or agent to the "interrupt-stack" network below; see the README.

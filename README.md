@@ -47,15 +47,38 @@ The same app can run with no server at all, from any static host. In the static 
 - Every URL in the page, manifest and service worker is relative, so it works under any path on any host. Nothing in the code names the host: if the site moves, redeploy it.
 - All Pages sites of one GitHub user share a browser origin, so another project on the same host could read this app's browser storage. Put nothing sensitive in it.
 
-## Which version is running
+## Which version is running, and updating from GitHub
 
-The first line of the container log names the commit it was built from:
+The first line of the container log says what the code is:
 
 ```
-interrupt-stack commit 9b41b5ca5b69 listening on :9958, data in /data
+interrupt-stack v1.2.0-3-g5a7581b (commit 5a7581b3c9d1) listening on :9958, data in /data
 ```
 
-The page shows the first seven characters in small grey text under the heading, for the copy of the app that device is running (so a device that has not refreshed yet shows its older commit). `GET /api/version` returns the full commit as well (`{"version": "<web files hash>", "commit": "<40 hex>"}`). The image build reads the commit from the `.git` directory in its build context (no git binary needed; the history is not copied into the image). If the context has no `.git`, the build still succeeds and the log says `commit unknown`. When running from a checkout with `bun server/main.ts`, it reads the commit from the checkout's `.git`.
+The label is the nearest git tag (`v1.2.0`), the tag plus how far past it (`v1.2.0-3-g5a7581b`), or just the short commit when there are no tags. The same label shows in small grey text under the heading in the app (for the copy of the app that device is running, so a device that has not refreshed yet shows its older label), and `GET /api/version` returns it with the full commit. If nothing can tell (an image built from a folder with no `.git`), it says `version unknown`.
+
+### Baking in a clone, and updating at start
+
+By default the image is built from the files in this repository, as before, and only knows its commit if the build context had a `.git` (Dockhand's does not). Two settings, as stack variables or in a `.env` file, change that:
+
+| Variable | Meaning |
+|---|---|
+| `INTERRUPT_STACK_REPO` | The clone URL, for example `https://github.com/<owner>/interrupt-stack.git`. Public repositories only. Setting it makes the build clone that repository with its `.git` (and tags) into the image. Nothing in the code names a host; this is the only place it is set. |
+| `INTERRUPT_STACK_REF` | The branch or tag to follow. Default `main`. |
+| `INTERRUPT_STACK_UPDATE` | `off` to never consult GitHub: the code in the image runs as it is. Default `on`. |
+
+With the repository set, the container does this every time it starts:
+
+1. Copies the code in the image to a writable folder and fetches `INTERRUPT_STACK_REF` from GitHub (20 second limit).
+2. If that works, moves the copy to that commit, regenerates the icons, and starts the server from it.
+3. If any step fails (GitHub unreachable, ref not found, bad checkout), it starts the code that is in the image.
+4. After starting updated code it waits up to 30 seconds for `/healthz`. If the server crashes or does not answer, it is stopped, the code in the image is started instead, and that commit is written to `update-quarantine.json` in the data folder so it is not tried again on every restart. A different commit on the ref is tried normally.
+
+Only the entrypoint (`server/entrypoint.ts`) always comes from the image; everything else can be the updated code. Limits: a crash after the 30 second window is an ordinary container restart (and could repeat); falling back runs older code against a database newer code may have changed, which is safe for additive changes; and whatever is on the ref on GitHub is what runs, so anyone who can push there controls the server.
+
+When the server starts without a repository set, it does not touch the network. With one set, the page's Refresh button also asks the server to look at GitHub in the background (at most once a minute, and it never delays the refresh; after the reload the page looks for the answer a few times over the next ten seconds). If the ref has moved past what is running, a note appears: "GitHub's main is now at abc1234. Redeploy or restart to apply." Restarting the container applies it, because the update happens at start. When the server is running under the container's entrypoint (so something will start it again after it exits), the note also has an **Update now** button: it asks the server to restart, waits for it to come back, and refreshes the page onto the new code. Your compose file needs `restart: unless-stopped` (this one has it) so the container comes back. If the new code fails to start, the container comes back on the code in the image (not on the previous update), the note says the server is still on the old version, and the page is not refreshed.
+
+If your deployment tool builds from a checkout that has no `.git`, setting `INTERRUPT_STACK_REPO` is how the server gets a version.
 
 ## Pangolin labels
 

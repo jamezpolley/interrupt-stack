@@ -1,7 +1,7 @@
 import { createSync } from "./sync.js";
 import { openStorage } from "./idb.js";
 import { createEventStream } from "./events.js";
-import { forceRefresh, updateAvailable } from "./refresh.js";
+import { canUpdateNow, describeServerUpdate, forceRefresh, readVersionInfo, requestServerCheck, updateServerNow } from "./refresh.js";
 import { completedToday } from "./today.js";
 import { LOCAL_ONLY } from "./config.js";
 
@@ -159,6 +159,8 @@ async function undo() {
 // version, a version.json written beside the app by the build (relative, so it works under any path).
 const VERSION_URL = LOCAL_ONLY ? "version.json" : "/api/version";
 
+const CHECK_REQUESTED = "interrupt-stack-check-requested";
+
 const REFRESH_MESSAGES = {
   unreachable: "Can't reach the server, so nothing was changed.",
   "signed-out": "You may need to sign in again. Nothing was changed.",
@@ -173,7 +175,42 @@ function showRefreshMessage(text) {
   refreshMessageTimer = setTimeout(() => (el.hidden = true), 8000);
 }
 
+let updatingServer = false;
+const UPDATE_NOW_MESSAGES = {
+  unavailable: "The server cannot update itself right now.",
+  refused: "The server refused to update.",
+  timeout: "The server did not come back within 90 seconds. Check the container.",
+};
+
+async function updateNow() {
+  updatingServer = true;
+  $("update-now-btn").disabled = true;
+  $("update-now-btn").hidden = true;
+  $("server-update-text").textContent = "Updating the server. This page reloads when it is back.";
+  const result = await updateServerNow({
+    fetch: (p, i) => fetch(p, i),
+    forceRefresh: () =>
+      forceRefresh({ checkUrl: VERSION_URL, fetch: (p, i) => fetch(p, i), caches: window.caches, serviceWorker: navigator.serviceWorker, reload: () => location.reload() }),
+  });
+  if (result.ok) return; // the page is reloading
+  updatingServer = false;
+  $("update-now-btn").disabled = false;
+  $("server-update-text").textContent =
+    result.reason === "unchanged"
+      ? `The server restarted but is still on ${result.label ?? "the same version"}, so the update did not take. Check the container log.`
+      : (UPDATE_NOW_MESSAGES[result.reason] ?? UPDATE_NOW_MESSAGES.refused);
+  $("update-now-btn").hidden = false;
+}
+
 async function refreshApp() {
+  // Also ask the server to look at GitHub, in the background. It does not delay the refresh: the answer arrives
+  // in /api/version and is shown by the next version check.
+  if (!LOCAL_ONLY) {
+    requestServerCheck({ fetch: (p, i) => fetch(p, i) });
+    try {
+      sessionStorage.setItem(CHECK_REQUESTED, "1"); // so the reloaded page looks for the answer a few times
+    } catch {}
+  }
   const buttons = [$("refresh-btn"), $("update-btn")];
   buttons.forEach((b) => (b.disabled = true));
   showRefreshMessage("Refreshing...");
@@ -200,7 +237,12 @@ function setUpInstall() {
 async function init() {
   // What this copy of the app was built from (cached with the app). A server without /version.js has none.
   const build = await import("./version.js").catch(() => null);
-  $("version").textContent = typeof build?.COMMIT === "string" ? build.COMMIT.slice(0, 7) : "version unknown";
+  $("version").textContent =
+    typeof build?.LABEL === "string" && build.LABEL
+      ? build.LABEL
+      : typeof build?.COMMIT === "string"
+        ? build.COMMIT.slice(0, 7)
+        : "version unknown";
   setUpInstall();
   let storage;
   try {
@@ -238,11 +280,22 @@ async function init() {
   $("undo-btn").addEventListener("click", undo);
   $("refresh-btn").addEventListener("click", refreshApp);
   $("update-btn").addEventListener("click", refreshApp);
+  $("update-now-btn").addEventListener("click", updateNow);
 
   const current = build?.VERSION ?? null; // no version means no update check
   const checkForUpdate = async () => {
-    const newer = await updateAvailable({ fetch: (p, i) => fetch(p, i), current, url: VERSION_URL });
+    const info = await readVersionInfo({ fetch: (p, i) => fetch(p, i), url: VERSION_URL });
+    // Unknown (server unreachable, sign-in redirect) leaves the banners as they were.
+    const newer = current && typeof info?.version === "string" && info.version ? info.version !== current : null;
     if (newer !== null) $("update").hidden = !newer;
+    if (info) {
+      const notice = LOCAL_ONLY ? null : describeServerUpdate(info);
+      if (!updatingServer) {
+        $("server-update-text").textContent = notice ?? "";
+        $("update-now-btn").hidden = !(notice && canUpdateNow(info));
+      }
+      $("server-update").hidden = !notice && !updatingServer;
+    }
   };
 
   await sync.start();
@@ -250,6 +303,13 @@ async function init() {
 
   const syncNow = () => sync.syncNow().catch(() => {});
   checkForUpdate();
+  // After a Refresh, the server was asked to look at GitHub just before the reload and may not have finished yet.
+  let followUp = false;
+  try {
+    followUp = sessionStorage.getItem(CHECK_REQUESTED) === "1";
+    sessionStorage.removeItem(CHECK_REQUESTED);
+  } catch {}
+  if (followUp) for (const ms of [1500, 4000, 9000]) setTimeout(checkForUpdate, ms);
 
   // The stream reconnects itself (events.js). On iOS a stream can also look open after the app resumes from
   // the background while being dead, so it is recreated whenever the page becomes visible.

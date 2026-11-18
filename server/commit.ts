@@ -3,6 +3,12 @@ import { dirname, join, resolve } from "node:path";
 
 const COMMIT_ID = /^[0-9a-f]{40}([0-9a-f]{24})?$/; // SHA-1, or SHA-256 repositories
 
+/** A commit id in canonical (lowercase) form, or null if the text is not one. */
+export function normalizeCommit(text: unknown): string | null {
+  const id = typeof text === "string" ? text.trim().toLowerCase() : "";
+  return COMMIT_ID.test(id) ? id : null;
+}
+
 const read = (path: string): string | null => {
   try {
     return readFileSync(path, "utf8");

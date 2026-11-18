@@ -239,7 +239,7 @@ describe("version", () => {
     const res = await get("/version.js");
     expect(res.headers.get("content-type")).toContain("text/javascript");
     expect(res.headers.get("cache-control")).toBe("no-cache");
-    expect(await res.text()).toBe(`export const VERSION = "${await versionOf(app)}";\nexport const COMMIT = null;\n`);
+    expect(await res.text()).toBe(`export const VERSION = "${await versionOf(app)}";\nexport const COMMIT = null;\nexport const LABEL = null;\n`);
   });
 
   test("the version is stable for unchanged files and changes when a shipped file changes", async () => {
@@ -288,5 +288,127 @@ describe("commit in /version.js", () => {
     const text = await (await a.fetch(new Request("http://t/version.js"))).text();
     expect(text).toContain(`export const COMMIT = "${sha}";`);
     expect(text).toContain("export const VERSION = ");
+  });
+});
+
+describe("version label and update check", () => {
+  const SHA = "0123456789abcdef0123456789abcdef01234567";
+  const fakeChecker = (available: object | null = null) => {
+    const calls: number[] = [];
+    return {
+      calls,
+      checker: {
+        request: () => void calls.push(1),
+        state: () => ({ enabled: true, ref: "main", checkedAt: 123, available }),
+      },
+    };
+  };
+  const post = (a: ReturnType<typeof createApp>, path: string) => a.fetch(new Request(`http://t${path}`, { method: "POST" }));
+
+  test("/version.js and /api/version carry the label", async () => {
+    const a = createApp(store, { webDir: dir, commit: SHA, label: "v1.2.0-3-g0123456" });
+    expect(await (await a.fetch(new Request("http://t/version.js"))).text()).toContain('export const LABEL = "v1.2.0-3-g0123456";');
+    expect((await (await a.fetch(new Request("http://t/api/version"))).json()).label).toBe("v1.2.0-3-g0123456");
+  });
+
+  test("/api/version says what the update checker knows", async () => {
+    const { checker } = fakeChecker({ commit: "f".repeat(40), short: "fffffff", ref: "main" });
+    const a = createApp(store, { webDir: dir, commit: SHA, updateChecker: checker });
+    const body = await (await a.fetch(new Request("http://t/api/version"))).json();
+    expect(body.update).toEqual({ enabled: true, ref: "main", checkedAt: 123, restartable: false, available: { commit: "f".repeat(40), short: "fffffff", ref: "main" } });
+  });
+
+  test("without an update checker /api/version says updating is not enabled", async () => {
+    const body = await (await get("/api/version")).json();
+    expect(body.update).toEqual({ enabled: false, ref: null, checkedAt: null, restartable: false, available: null });
+  });
+
+  test("POST /api/update-check starts a check and answers at once with 202", async () => {
+    const { checker, calls } = fakeChecker();
+    const a = createApp(store, { webDir: dir, updateChecker: checker });
+    const res = await post(a, "/api/update-check");
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ checking: true });
+    expect(calls).toHaveLength(1);
+  });
+
+  test("POST /api/update-check without a checker is a harmless 200", async () => {
+    const res = await post(app, "/api/update-check");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ checking: false });
+  });
+
+  test("only POST is accepted, and the route has its own metrics label", async () => {
+    expect((await get("/api/update-check")).status).toBe(404);
+    await post(app, "/api/update-check");
+    const text = await (await get("/metrics")).text();
+    expect(text).toContain('route="/api/update-check",method="POST",code="200"');
+  });
+});
+
+describe("update now (restart to apply an update)", () => {
+  const available = { commit: "f".repeat(40), short: "fffffff", ref: "main" };
+  const checker = (avail: object | null) => ({ request: () => {}, state: () => ({ enabled: true, ref: "main", checkedAt: 1, available: avail }) });
+  const post = (a: ReturnType<typeof createApp>) => a.fetch(new Request("http://t/api/update", { method: "POST" }));
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  test("answers 202 at once, then restarts, when it is supervised and GitHub has something different", async () => {
+    let restarts = 0;
+    const a = createApp(store, { webDir: dir, updateChecker: checker(available), onRestart: () => void restarts++ });
+    const res = await post(a);
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ restarting: true });
+    expect(restarts).toBe(0); // the answer goes out before the process goes away
+    await wait(700);
+    expect(restarts).toBe(1);
+  });
+
+  test("pressing it twice restarts once", async () => {
+    let restarts = 0;
+    const a = createApp(store, { webDir: dir, updateChecker: checker(available), onRestart: () => void restarts++ });
+    await post(a);
+    await post(a);
+    await wait(900);
+    expect(restarts).toBe(1);
+  });
+
+  test("refused, and no restart, when the server is not supervised (nothing would bring it back)", async () => {
+    const a = createApp(store, { webDir: dir, updateChecker: checker(available) });
+    const res = await post(a);
+    expect(res.status).toBe(409);
+    expect((await res.json()).restarting).toBe(false);
+  });
+
+  test("refused, and no restart, when GitHub has nothing different", async () => {
+    let restarts = 0;
+    const a = createApp(store, { webDir: dir, updateChecker: checker(null), onRestart: () => void restarts++ });
+    expect((await post(a)).status).toBe(409);
+    await wait(700);
+    expect(restarts).toBe(0);
+  });
+
+  test("refused when there is no update checker at all", async () => {
+    let restarts = 0;
+    const a = createApp(store, { webDir: dir, onRestart: () => void restarts++ });
+    expect((await post(a)).status).toBe(409);
+    expect(restarts).toBe(0);
+  });
+
+  test("/api/version says whether a restart can be requested, and when the server started", async () => {
+    const supervised = createApp(store, { webDir: dir, updateChecker: checker(available), onRestart: () => {} });
+    const body = await (await supervised.fetch(new Request("http://t/api/version"))).json();
+    expect(body.update.restartable).toBe(true);
+    expect(typeof body.startedAt).toBe("number");
+    expect(body.startedAt).toBeLessThanOrEqual(Date.now());
+    const plain = await (await get("/api/version")).json();
+    expect(plain.update.restartable).toBe(false);
+  });
+
+  test("only POST is accepted, and the route has its own metrics label", async () => {
+    expect((await get("/api/update")).status).toBe(404);
+    await post(createApp(store, { webDir: dir }));
+    const a = createApp(store, { webDir: dir });
+    await post(a);
+    expect(await (await a.fetch(new Request("http://t/metrics"))).text()).toContain('route="/api/update",method="POST",code="409"');
   });
 });
