@@ -75,13 +75,17 @@ The server records every push, pop and restore in an append-only `events` table 
 - A device only sends an item's latest state. If you push, pop and restore something offline, the server sees the net change, not each step.
 - A device time later than the server's clock is clamped to the server's clock (and one before 1970 to 1970), not refused, so a phone with a wrong clock cannot get stuck in a sync error. Its events are only as accurate as its clock.
 - Only changes made after this feature shipped are logged. Older items have no history.
+- Whichever change reaches the server last still wins (see above), so a device resending an older state, such as a retry after a lost response, can log a `restore` for an item another device popped. Its time is never earlier than the item's previous event, so one item's events always read forwards.
 
-Time on a task is the time it was on top of the stack, not push to pop: pushing B over A pauses A. Work that out from the log with a script. For a quick look, the time between each item's push and its (last) pop, in minutes:
+Time on a task is the time it was on top of the stack, not push to pop: pushing B over A pauses A. Work that out from the log with a script. For a quick look, the minutes from each item's first push to its last pop (items with no push in the log, or not yet popped, are skipped):
 
 ```sh
 curl -s https://<your-domain>/api/log | jq -s '
-  group_by(.id) | map({text: .[0].text,
-    minutes: ((map(select(.op=="pop"))|last.at // empty|fromdate) - (.[0].at|fromdate)) / 60})'
+  def secs: sub("\\.[0-9]+Z$"; "Z") | fromdate;
+  group_by(.id)
+  | map(select(any(.[]; .op == "push") and any(.[]; .op == "pop"))
+        | { text: .[0].text,
+            minutes: (((map(select(.op == "pop")) | last.at | secs) - (map(select(.op == "push")) | first.at | secs)) / 60) })'
 ```
 
 (Behind SSO, fetch it from a signed-in browser or with your proxy's token.) The log has no authentication of its own, like the rest of the API.

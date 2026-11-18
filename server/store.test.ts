@@ -208,7 +208,10 @@ describe("event log", () => {
     const s = clocked({ now: 9000 });
     s.upsert("s-aaaa", { text: "task", ts: 1000, removed: false, at: 99_000_000 });
     s.upsert("s-aaaa", { text: "task", ts: 1000, removed: true, at: 99_000_000 });
-    expect(s.log().map((e) => e.at)).toEqual([9000, 9000]);
+    expect(s.log().map((e) => [e.op, e.at])).toEqual([
+      ["push", 1000],
+      ["pop", 9000],
+    ]);
   });
 
   test("a non-integer at is rejected", () => {
@@ -222,6 +225,35 @@ describe("event log", () => {
     const s = clocked({ now: 9000 });
     expect(s.upsert("s-aaaa", input("task", 1000)).at).toBe(1000);
     expect(s.upsert("s-aaaa", { text: "task", ts: 1000, removed: true, at: 2000 }).at).toBe(2000);
+  });
+
+  test("a stale resend after another device's pop never logs an event dated before that pop", () => {
+    // Phone A's push reached the server but the response was lost; desktop B popped it; A then retries its old state.
+    const s = clocked({ now: 9000 });
+    s.upsert("s-aaaa", { text: "task", ts: 500, removed: false, at: 500 });
+    s.upsert("s-aaaa", { text: "task", ts: 500, removed: true, at: 1900 });
+    s.upsert("s-aaaa", { text: "task", ts: 500, removed: false, at: 500 });
+    expect(s.log().map((e) => [e.op, e.at])).toEqual([
+      ["push", 500],
+      ["pop", 1900],
+      ["restore", 1900],
+    ]);
+    expect(s.since(0).items[0].at).toBe(1900);
+  });
+
+  test("an item resent to a fresh database is logged as pushed at its own ts, whatever its later history", () => {
+    const s = clocked({ now: 9000 });
+    const item = s.upsert("s-aaaa", { text: "task", ts: 100, removed: false, at: 800 }); // pushed, popped, restored
+    expect(s.log().map((e) => [e.op, e.at])).toEqual([["push", 100]]);
+    expect(item.at).toBe(800);
+  });
+
+  test("a resend with the same state but new text or ts logs nothing and keeps the stored at", () => {
+    const s = clocked({ now: 9000 });
+    s.upsert("s-aaaa", input("task", 1000));
+    const again = s.upsert("s-aaaa", { text: "changed", ts: 2000, removed: false, at: 5000 });
+    expect(s.log()).toHaveLength(1);
+    expect(again.at).toBe(1000);
   });
 
   test("events survive close and reopen of a file database", () => {
@@ -256,6 +288,8 @@ describe("event log", () => {
       old.close();
       const s = openStore(path);
       expect(s.since(0).items).toEqual([{ id: "s-aaaa", text: "from before", ts: 700, at: 700, removed: false, seq: 1 }]);
+      expect(s.log()).toEqual([]);
+      expect(s.upsert("s-aaaa", input("from before", 700)).at).toBe(700); // same state, old row with a null at
       expect(s.log()).toEqual([]);
       s.upsert("s-aaaa", input("from before", 700, true));
       expect(ops(s)).toEqual([["pop", "s-aaaa"]]);

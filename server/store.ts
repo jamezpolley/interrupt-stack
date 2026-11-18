@@ -74,21 +74,23 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
     const now = clock();
     const clamp = (t: number) => Math.max(0, Math.min(t, now)); // never in the future, never before 1970
     const before = find.get({ $id: id }) as Row | null;
+    // A later write can describe an older state (a retry whose response was lost, a device that was offline).
+    // Whichever arrives last still wins, as before, but its event is never dated earlier than the item's last one,
+    // so the history of one item always reads forwards.
+    const floor = before ? Math.min(before.at ?? before.ts, now) : 0;
+    const after = (t: number) => Math.max(clamp(t), floor);
     const changes: [LogEvent["op"], number][] = [];
     let itemAt: number;
     if (!before) {
-      if (removed) {
-        itemAt = clamp(at ?? now);
-        changes.push(["push", clamp(ts)], ["pop", itemAt]);
-      } else {
-        itemAt = clamp(at ?? ts);
-        changes.push(["push", itemAt]);
-      }
+      // A new row is logged as pushed at its own ts, whatever has happened to it since on the device.
+      changes.push(["push", clamp(ts)]);
+      itemAt = clamp(at ?? (removed ? now : ts));
+      if (removed) changes.push(["pop", itemAt]);
     } else if (before.removed === 0 && removed) {
-      itemAt = clamp(at ?? now);
+      itemAt = after(at ?? now);
       changes.push(["pop", itemAt]);
     } else if (before.removed === 1 && !removed) {
-      itemAt = clamp(at ?? now);
+      itemAt = after(at ?? now);
       changes.push(["restore", itemAt]);
     } else {
       itemAt = before.at ?? before.ts;
