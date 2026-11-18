@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,7 +20,7 @@ const input = (text = "task", ts = 1000, removed = false) => ({ text, ts, remove
 describe("store", () => {
   test("upsert creates a row with seq 1", () => {
     const item = mem().upsert("s-aaaa", input("write plan", 5));
-    expect(item).toEqual({ id: "s-aaaa", text: "write plan", ts: 5, removed: false, seq: 1 });
+    expect(item).toEqual({ id: "s-aaaa", text: "write plan", ts: 5, at: 5, removed: false, seq: 1 });
   });
 
   test("second upsert of another id gets seq 2", () => {
@@ -140,6 +141,125 @@ describe("store", () => {
       b.close();
       expect(epoch).toMatch(/^[0-9a-f-]{16,}$/);
       expect(mem().epoch).not.toBe(epoch);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("event log", () => {
+  const clocked = (t: { now: number }) => {
+    const s = openStore(":memory:", { now: () => t.now });
+    open.push(s);
+    return s;
+  };
+  const ops = (s: Store) => s.log().map((e) => [e.op, e.id]);
+
+  test("a new live item logs one push, at its own ts when no at is sent", () => {
+    const t = { now: 9000 };
+    const s = clocked(t);
+    s.upsert("s-aaaa", input("write plan", 5000));
+    expect(s.log()).toEqual([{ n: 1, ts: 9000, at: 5000, op: "push", id: "s-aaaa", text: "write plan" }]);
+  });
+
+  test("a new item that arrives already removed logs a push then a pop", () => {
+    const s = clocked({ now: 9000 });
+    s.upsert("s-aaaa", { text: "quick", ts: 4000, removed: true, at: 6000 });
+    expect(s.log().map((e) => [e.op, e.at])).toEqual([
+      ["push", 4000],
+      ["pop", 6000],
+    ]);
+  });
+
+  test("live to removed logs a pop and removed to live logs a restore, with the device's at", () => {
+    const s = clocked({ now: 9000 });
+    s.upsert("s-aaaa", input("task", 1000));
+    s.upsert("s-aaaa", { text: "task", ts: 1000, removed: true, at: 2000 });
+    s.upsert("s-aaaa", { text: "task", ts: 1000, removed: false, at: 3000 });
+    expect(s.log().map((e) => [e.op, e.at])).toEqual([
+      ["push", 1000],
+      ["pop", 2000],
+      ["restore", 3000],
+    ]);
+  });
+
+  test("resending the same state logs nothing more", () => {
+    const s = clocked({ now: 9000 });
+    s.upsert("s-aaaa", input("task", 1000));
+    s.upsert("s-aaaa", input("task", 1000));
+    s.upsert("s-aaaa", { text: "task", ts: 1000, removed: true, at: 2000 });
+    s.upsert("s-aaaa", { text: "task", ts: 1000, removed: true, at: 2500 });
+    expect(ops(s)).toEqual([
+      ["push", "s-aaaa"],
+      ["pop", "s-aaaa"],
+    ]);
+  });
+
+  test("a missing at on a pop falls back to the server clock", () => {
+    const t = { now: 9000 };
+    const s = clocked(t);
+    s.upsert("s-aaaa", input("task", 1000));
+    t.now = 9500;
+    s.upsert("s-aaaa", input("task", 1000, true));
+    expect(s.log()[1]).toMatchObject({ op: "pop", ts: 9500, at: 9500 });
+  });
+
+  test("an at later than the server clock is clamped to it, not rejected", () => {
+    const s = clocked({ now: 9000 });
+    s.upsert("s-aaaa", { text: "task", ts: 1000, removed: false, at: 99_000_000 });
+    s.upsert("s-aaaa", { text: "task", ts: 1000, removed: true, at: 99_000_000 });
+    expect(s.log().map((e) => e.at)).toEqual([9000, 9000]);
+  });
+
+  test("a non-integer at is rejected", () => {
+    const s = clocked({ now: 9000 });
+    expect(() => s.upsert("s-aaaa", { text: "t", ts: 1, removed: false, at: 1.5 })).toThrow(ValidationError);
+    expect(() => s.upsert("s-aaaa", { text: "t", ts: 1, removed: false, at: "x" as any })).toThrow(ValidationError);
+    expect(s.log()).toEqual([]);
+  });
+
+  test("the item carries its at, defaulting to ts", () => {
+    const s = clocked({ now: 9000 });
+    expect(s.upsert("s-aaaa", input("task", 1000)).at).toBe(1000);
+    expect(s.upsert("s-aaaa", { text: "task", ts: 1000, removed: true, at: 2000 }).at).toBe(2000);
+  });
+
+  test("events survive close and reopen of a file database", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ist-log-"));
+    try {
+      const path = join(dir, "stack.db");
+      const a = openStore(path);
+      a.upsert("s-aaaa", input("kept", 1000));
+      a.close();
+      const b = openStore(path);
+      expect(b.log().map((e) => e.op)).toEqual(["push"]);
+      b.upsert("s-aaaa", input("kept", 1000, true));
+      expect(b.log().map((e) => [e.n, e.op])).toEqual([
+        [1, "push"],
+        [2, "pop"],
+      ]);
+      b.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a database created before the event log opens, keeps its items, and starts an empty log", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ist-old-"));
+    try {
+      const path = join(dir, "stack.db");
+      const old = new Database(path, { create: true });
+      old.run(
+        "CREATE TABLE items (id TEXT PRIMARY KEY, text TEXT NOT NULL, ts INTEGER NOT NULL, removed INTEGER NOT NULL, seq INTEGER NOT NULL)",
+      );
+      old.run("INSERT INTO items VALUES ('s-aaaa', 'from before', 700, 0, 1)");
+      old.close();
+      const s = openStore(path);
+      expect(s.since(0).items).toEqual([{ id: "s-aaaa", text: "from before", ts: 700, at: 700, removed: false, seq: 1 }]);
+      expect(s.log()).toEqual([]);
+      s.upsert("s-aaaa", input("from before", 700, true));
+      expect(ops(s)).toEqual([["pop", "s-aaaa"]]);
+      s.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

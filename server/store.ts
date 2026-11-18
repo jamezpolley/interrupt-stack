@@ -1,7 +1,9 @@
 import { Database } from "bun:sqlite";
 
-export type Item = { id: string; text: string; ts: number; removed: boolean; seq: number };
-export type ItemInput = { text: string; ts: number; removed: boolean };
+/** `at` is the device's clock when the item last changed state (equal to `ts` for a fresh push). */
+export type Item = { id: string; text: string; ts: number; at: number; removed: boolean; seq: number };
+export type ItemInput = { text: string; ts: number; removed: boolean; at?: number };
+export type LogEvent = { n: number; ts: number; at: number; op: "push" | "pop" | "restore"; id: string; text: string };
 
 export class ValidationError extends Error {
   constructor(message: string) {
@@ -19,17 +21,26 @@ export interface Store {
   upsert(id: string, input: ItemInput): Item;
   since(seq: number): { seq: number; items: Item[] };
   counts(): { live: number; removed: number };
+  /** Every push, pop and restore the server has seen, oldest first. */
+  log(): LogEvent[];
   close(): void;
 }
 
-type Row = { id: string; text: string; ts: number; removed: number; seq: number };
-const toItem = (r: Row): Item => ({ id: r.id, text: r.text, ts: r.ts, removed: r.removed === 1, seq: r.seq });
+type Row = { id: string; text: string; ts: number; at: number | null; removed: number; seq: number };
+const toItem = (r: Row): Item => ({ id: r.id, text: r.text, ts: r.ts, at: r.at ?? r.ts, removed: r.removed === 1, seq: r.seq });
 
-export function openStore(path: string): Store {
+export function openStore(path: string, opts: { now?: () => number } = {}): Store {
+  const clock = opts.now ?? Date.now;
   const db = new Database(path, { create: true });
   db.run("PRAGMA journal_mode = WAL");
   db.run(
-    "CREATE TABLE IF NOT EXISTS items (id TEXT PRIMARY KEY, text TEXT NOT NULL, ts INTEGER NOT NULL, removed INTEGER NOT NULL, seq INTEGER NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS items (id TEXT PRIMARY KEY, text TEXT NOT NULL, ts INTEGER NOT NULL, at INTEGER, removed INTEGER NOT NULL, seq INTEGER NOT NULL)",
+  );
+  // Databases created before the event log have no `at` column.
+  const columns = db.prepare("PRAGMA table_info(items)").all() as { name: string }[];
+  if (!columns.some((c) => c.name === "at")) db.run("ALTER TABLE items ADD COLUMN at INTEGER");
+  db.run(
+    "CREATE TABLE IF NOT EXISTS events (n INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, at INTEGER NOT NULL, op TEXT NOT NULL, id TEXT NOT NULL, text TEXT NOT NULL)",
   );
   db.run("CREATE INDEX IF NOT EXISTS items_seq ON items (seq)");
   db.run("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
@@ -38,21 +49,54 @@ export function openStore(path: string): Store {
   if (!savedEpoch) db.prepare("INSERT INTO meta (key, value) VALUES ('epoch', ?)").run(epoch);
 
   const write = db.prepare(
-    `INSERT INTO items (id, text, ts, removed, seq)
-     VALUES ($id, $text, $ts, $removed, (SELECT COALESCE(MAX(seq), 0) + 1 FROM items))
-     ON CONFLICT(id) DO UPDATE SET text = $text, ts = $ts, removed = $removed,
+    `INSERT INTO items (id, text, ts, at, removed, seq)
+     VALUES ($id, $text, $ts, $at, $removed, (SELECT COALESCE(MAX(seq), 0) + 1 FROM items))
+     ON CONFLICT(id) DO UPDATE SET text = $text, ts = $ts, at = $at, removed = $removed,
        seq = (SELECT COALESCE(MAX(seq), 0) + 1 FROM items)
-     RETURNING id, text, ts, removed, seq`,
+     RETURNING id, text, ts, at, removed, seq`,
   );
-  const later = db.prepare("SELECT id, text, ts, removed, seq FROM items WHERE seq > $seq ORDER BY seq ASC");
+  const find = db.prepare("SELECT id, text, ts, at, removed, seq FROM items WHERE id = $id");
+  const record = db.prepare(
+    "INSERT INTO events (ts, at, op, id, text) VALUES ($ts, $at, $op, $id, $text)",
+  );
+  const events = db.prepare("SELECT n, ts, at, op, id, text FROM events ORDER BY n ASC");
+  const later = db.prepare("SELECT id, text, ts, at, removed, seq FROM items WHERE seq > $seq ORDER BY seq ASC");
   const maxSeq = db.prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM items");
   const tally = db.prepare(
     "SELECT COALESCE(SUM(removed = 0), 0) AS live, COALESCE(SUM(removed = 1), 0) AS removed FROM items",
   );
 
-  const upsertTx = db.transaction((id: string, text: string, ts: number, removed: boolean) =>
-    toItem(write.get({ $id: id, $text: text, $ts: ts, $removed: removed ? 1 : 0 }) as Row),
-  );
+  // The server compares what a device sends with what it holds and logs the difference, so a resend of the
+  // same state adds nothing. A device only sends an item's latest state, so several offline changes between
+  // two syncs show up as the net change. Event times from a device are clamped to the server's clock: a phone
+  // whose clock runs ahead must not get stuck in a sync error or put events in the future.
+  const upsertTx = db.transaction((id: string, text: string, ts: number, removed: boolean, at: number | undefined) => {
+    const now = clock();
+    const clamp = (t: number) => Math.max(0, Math.min(t, now)); // never in the future, never before 1970
+    const before = find.get({ $id: id }) as Row | null;
+    const changes: [LogEvent["op"], number][] = [];
+    let itemAt: number;
+    if (!before) {
+      if (removed) {
+        itemAt = clamp(at ?? now);
+        changes.push(["push", clamp(ts)], ["pop", itemAt]);
+      } else {
+        itemAt = clamp(at ?? ts);
+        changes.push(["push", itemAt]);
+      }
+    } else if (before.removed === 0 && removed) {
+      itemAt = clamp(at ?? now);
+      changes.push(["pop", itemAt]);
+    } else if (before.removed === 1 && !removed) {
+      itemAt = clamp(at ?? now);
+      changes.push(["restore", itemAt]);
+    } else {
+      itemAt = before.at ?? before.ts;
+    }
+    const saved = toItem(write.get({ $id: id, $text: text, $ts: ts, $at: itemAt, $removed: removed ? 1 : 0 }) as Row);
+    for (const [op, when] of changes) record.run({ $ts: now, $at: when, $op: op, $id: id, $text: text });
+    return saved;
+  });
 
   return {
     epoch,
@@ -62,7 +106,9 @@ export function openStore(path: string): Store {
       if (!text) throw new ValidationError("text is required");
       if (text.length > MAX_TEXT) throw new ValidationError(`text is over ${MAX_TEXT} characters`);
       if (!Number.isSafeInteger(input.ts)) throw new ValidationError("ts must be an integer");
-      return upsertTx.immediate(id, text, input.ts, input.removed === true);
+      const at = input.at ?? undefined;
+      if (at !== undefined && !Number.isSafeInteger(at)) throw new ValidationError("at must be an integer");
+      return upsertTx.immediate(id, text, input.ts, input.removed === true, at);
     },
     since(seq) {
       const items = (later.all({ $seq: seq }) as Row[]).map(toItem);
@@ -70,6 +116,9 @@ export function openStore(path: string): Store {
     },
     counts() {
       return tally.get() as { live: number; removed: number };
+    },
+    log() {
+      return events.all() as LogEvent[];
     },
     close() {
       db.close();

@@ -36,9 +36,9 @@ describe("api", () => {
   test("PUT then GET since 0 returns the item", async () => {
     const res = await put("s-aaaa", item("hello", 7));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ id: "s-aaaa", text: "hello", ts: 7, removed: false, seq: 1 });
+    expect(await res.json()).toEqual({ id: "s-aaaa", text: "hello", ts: 7, at: 7, removed: false, seq: 1 });
     const list = await (await get("/api/items?since=0")).json();
-    expect(list).toEqual({ seq: 1, epoch: store.epoch, items: [{ id: "s-aaaa", text: "hello", ts: 7, removed: false, seq: 1 }] });
+    expect(list).toEqual({ seq: 1, epoch: store.epoch, items: [{ id: "s-aaaa", text: "hello", ts: 7, at: 7, removed: false, seq: 1 }] });
   });
 
   test("GET /api/items carries the database epoch as a string", async () => {
@@ -195,5 +195,60 @@ describe("metrics", () => {
     const t = sample(await metrics(), "interrupt_stack_start_time_seconds")!;
     expect(t).toBeGreaterThan(1_700_000_000);
     expect(t).toBeLessThanOrEqual(Date.now() / 1000);
+  });
+});
+
+describe("event log", () => {
+  const lines = async (res: Response) =>
+    (await res.text()).split("\n").filter(Boolean).map((l) => JSON.parse(l));
+
+  test("an empty log is a 200 ndjson response with no lines", async () => {
+    const res = await get("/api/log");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/x-ndjson");
+    expect(await res.text()).toBe("");
+  });
+
+  test("push, pop and restore appear in order with ISO times", async () => {
+    const t0 = Date.now() - 60_000;
+    await put("s-aaaa", { text: "bank rec", ts: t0, removed: false });
+    await put("s-aaaa", { text: "bank rec", ts: t0, removed: true, at: t0 + 30_000 });
+    await put("s-aaaa", { text: "bank rec", ts: t0, removed: false, at: t0 + 40_000 });
+    const events = await lines(await get("/api/log"));
+    expect(events.map((e) => [e.n, e.op, e.id, e.text])).toEqual([
+      [1, "push", "s-aaaa", "bank rec"],
+      [2, "pop", "s-aaaa", "bank rec"],
+      [3, "restore", "s-aaaa", "bank rec"],
+    ]);
+    expect(events[1].at).toBe(new Date(t0 + 30_000).toISOString());
+    expect(typeof events[1].ts).toBe("string");
+    expect(Date.parse(events[1].ts)).toBeGreaterThanOrEqual(Date.parse(events[1].at));
+  });
+
+  test("a non-integer at is a 400", async () => {
+    const res = await put("s-aaaa", { text: "x", ts: 1, removed: false, at: "soon" });
+    expect(res.status).toBe(400);
+    expect((await (await get("/api/log")).text())).toBe("");
+  });
+
+  test("a far-future at is accepted and never lands after the server's own time", async () => {
+    const res = await put("s-aaaa", { text: "x", ts: Date.now(), removed: false, at: Date.now() + 86_400_000 * 365 });
+    expect(res.status).toBe(200);
+    const [e] = await lines(await get("/api/log"));
+    expect(Date.parse(e.at)).toBeLessThanOrEqual(Date.parse(e.ts));
+  });
+
+  test("an absurdly old at or ts cannot make the log unreadable", async () => {
+    const res = await put("s-aaaa", { text: "x", ts: -9_000_000_000_000_000, removed: true, at: -9_000_000_000_000_000 });
+    expect(res.status).toBe(200);
+    const log = await get("/api/log");
+    expect(log.status).toBe(200);
+    expect((await lines(log)).map((e) => e.at)).toEqual(["1970-01-01T00:00:00.000Z", "1970-01-01T00:00:00.000Z"]);
+  });
+
+  test("the log is counted under its own route label", async () => {
+    await get("/api/log");
+    const text = await (await get("/metrics")).text();
+    expect(text).toContain('interrupt_stack_http_requests_total{route="/api/log",method="GET",code="200"} 1');
   });
 });
