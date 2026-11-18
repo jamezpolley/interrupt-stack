@@ -5,12 +5,13 @@
 // Client errors that will not fix themselves by retrying the same request straight away.
 const permanentlyRejected = (status) => status >= 400 && status < 500 && status !== 408 && status !== 429;
 
-export function createSync({ storage, fetch, now = () => Date.now(), onChange = () => {}, onStatus = () => {} }) {
+// `local` is the static version: nothing is ever sent anywhere, so there is no queue and no network use.
+export function createSync({ storage, fetch, now = () => Date.now(), onChange = () => {}, onStatus = () => {}, local = false }) {
   const items = new Map(); // id -> {id, text, ts, at, removed, seq}; `at` is when it last changed state, on this device's clock
   const dirty = new Set(); // ids with changes the server has not acknowledged
   let lastSeq = 0;
   let epoch = null; // identifies the server database we last synced with
-  let state = "syncing";
+  let state = local ? "local" : "syncing";
   let storageFailed = false;
   let running = null;
   let rerun = false;
@@ -39,10 +40,10 @@ export function createSync({ storage, fetch, now = () => Date.now(), onChange = 
     storageFailed = false;
     for (const item of list) {
       items.set(item.id, item);
-      dirty.add(item.id);
+      if (!local) dirty.add(item.id);
     }
     for (const item of list) await safe(() => storage.putItem(item));
-    await safe(() => storage.setDirty([...dirty]));
+    if (!local) await safe(() => storage.setDirty([...dirty]));
     onChange();
     onStatus(status());
     syncNow().catch(() => {});
@@ -121,6 +122,7 @@ export function createSync({ storage, fetch, now = () => Date.now(), onChange = 
   }
 
   function syncNow() {
+    if (local) return Promise.resolve();
     if (running) {
       rerun = true;
       return running;
@@ -150,10 +152,11 @@ export function createSync({ storage, fetch, now = () => Date.now(), onChange = 
         saved = { items: [], dirty: [], lastSeq: 0, epoch: null };
       }
       for (const it of saved.items) items.set(it.id, it);
-      for (const id of saved.dirty) if (items.has(id)) dirty.add(id);
+      if (!local) for (const id of saved.dirty) if (items.has(id)) dirty.add(id);
       lastSeq = saved.lastSeq;
       epoch = saved.epoch ?? null;
       onChange();
+      if (local) return onStatus(status());
       await syncNow();
     },
 

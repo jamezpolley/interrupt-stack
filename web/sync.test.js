@@ -524,3 +524,63 @@ describe("swap", () => {
     expect(rows.map((r) => [r.text, r.removed]).sort()).toEqual([["lunch", false], ["meeting", true]]);
   });
 });
+
+describe("local-only mode", () => {
+  // A fetch that fails the test if it is ever called.
+  const noNetwork = (calls) => async (path) => {
+    calls.push(path);
+    throw new Error("local-only mode must not touch the network");
+  };
+
+  test("makes no network calls at all, however it is used", async () => {
+    const calls = [];
+    const sync = createSync({ storage: memStorage(), fetch: noNetwork(calls), local: true });
+    await sync.start();
+    const a = await sync.push("one");
+    await sync.swap("two");
+    await sync.remove(a.id);
+    await sync.restore(a.id);
+    await sync.syncNow();
+    expect(calls).toEqual([]);
+  });
+
+  test("the stack works: push, swap, remove and restore", async () => {
+    let t = 1_000_000;
+    const sync = createSync({ storage: memStorage(), fetch: noNetwork([]), local: true, now: () => (t += 1000) });
+    await sync.start();
+    const a = await sync.push("meeting");
+    expect(sync.stack().map((i) => i.text)).toEqual(["meeting"]);
+    await sync.swap("lunch");
+    expect(sync.stack().map((i) => i.text)).toEqual(["lunch"]);
+    await sync.restore(a.id);
+    expect(sync.stack().map((i) => i.text)).toEqual(["lunch", "meeting"]);
+  });
+
+  test("status is local with nothing pending, from the start", async () => {
+    const seen = [];
+    const sync = createSync({ storage: memStorage(), fetch: noNetwork([]), local: true, onStatus: (s) => seen.push(s) });
+    expect(sync.status()).toEqual({ state: "local", pending: 0 });
+    await sync.start();
+    await sync.push("x");
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((s) => s.state === "local" && s.pending === 0)).toBe(true);
+  });
+
+  test("the stack is kept on the device across a restart", async () => {
+    const storage = memStorage();
+    const first = createSync({ storage, fetch: noNetwork([]), local: true });
+    await first.start();
+    await first.push("kept");
+    const second = createSync({ storage, fetch: noNetwork([]), local: true });
+    await second.start();
+    expect(second.stack().map((i) => i.text)).toEqual(["kept"]);
+  });
+
+  test("nothing is queued to send, so nothing waits to be sent if the app later gains a server", async () => {
+    const storage = memStorage();
+    const sync = createSync({ storage, fetch: noNetwork([]), local: true });
+    await sync.start();
+    await sync.push("x");
+    expect((await storage.load()).dirty).toEqual([]);
+  });
+});

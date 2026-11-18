@@ -2,12 +2,13 @@
 // The stack itself lives in IndexedDB and is never touched here.
 //
 // Clearing the cache while offline would leave an app that cannot open at all, so the server is checked first
-// and nothing is cleared unless it answers. /healthz is used because the service worker never intercepts it:
+// and nothing is cleared unless it answers. /healthz is used (the static version passes its version.json) because
+// the service worker never intercepts it:
 // asking for the page itself would just be answered from the cache this is about to clear.
-export async function forceRefresh({ fetch, caches, serviceWorker, reload }) {
+export async function forceRefresh({ fetch, caches, serviceWorker, reload, checkUrl = "/healthz" }) {
   let res;
   try {
-    res = await fetch("/healthz", { cache: "no-store" });
+    res = await fetch(checkUrl, { cache: "no-store" });
   } catch {
     return { ok: false, reason: "unreachable" };
   }
@@ -28,10 +29,10 @@ export async function forceRefresh({ fetch, caches, serviceWorker, reload }) {
 
 // Is the server running newer web files than this copy of the app? Returns true or false, or null when that
 // cannot be known (server unreachable, a sign-in redirect, an unexpected answer): the caller should then say nothing.
-export async function updateAvailable({ fetch, current }) {
+export async function updateAvailable({ fetch, current, url = "/api/version" }) {
   if (!current) return null;
   try {
-    const res = await fetch("/api/version", { cache: "no-store" });
+    const res = await fetch(url, { cache: "no-store" });
     if (!res.ok || res.redirected) return null;
     const { version } = await res.json();
     return typeof version === "string" && version ? version !== current : null;

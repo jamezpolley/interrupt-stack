@@ -1,0 +1,42 @@
+name: Static version
+
+# Builds the static version of the app (no server, everything stored in the browser) and publishes it with
+# GitHub Pages. The repository's Pages source must be set to "GitHub Actions".
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1"
+      - run: bun test
+      - run: bun scripts/make-icons.ts
+      - run: bun scripts/build-static.ts _site
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

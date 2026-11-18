@@ -38,6 +38,15 @@ Settings below come from Dockhand's manual (https://dockhand.pro/manual, read 20
 
 Not covered by the manual: whether a webhook-triggered run applies the build option. Check on your first webhook deploy.
 
+## Static version (GitHub Pages)
+
+The same app can run with no server at all, from any static host. In the static version everything is stored in the browser and nothing syncs, and the status reads **Local only**. It still checks for updates and offers the same Refresh and update banner, using a `version.json` the build writes beside the app.
+
+- `bun scripts/build-static.ts [output dir]` builds it (default `_site/`; run `bun scripts/make-icons.ts` first for the icons). It switches `config.js` to `LOCAL_ONLY = true` and writes `version.js` and `version.json`. The commit comes from `GITHUB_SHA`, or from the checkout's `.git`.
+- `.github/workflows/static-version.yml` runs the tests, builds it and publishes it with GitHub Pages on every push to `main`. In the repository settings, Pages must use the **GitHub Actions** source.
+- Every URL in the page, manifest and service worker is relative, so it works under any path on any host. Nothing in the code names the host: if the site moves, redeploy it.
+- All Pages sites of one GitHub user share a browser origin, so another project on the same host could read this app's browser storage. Put nothing sensitive in it.
+
 ## Which version is running
 
 The first line of the container log names the commit it was built from:

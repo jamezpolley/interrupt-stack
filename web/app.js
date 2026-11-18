@@ -3,6 +3,7 @@ import { openStorage } from "./idb.js";
 import { createEventStream } from "./events.js";
 import { forceRefresh, updateAvailable } from "./refresh.js";
 import { completedToday } from "./today.js";
+import { LOCAL_ONLY } from "./config.js";
 
 const $ = (id) => document.getElementById(id);
 const UNDO_MS = 15000;
@@ -32,7 +33,9 @@ let storageNoteShown = false;
 
 function renderStatus({ state, pending, storageFailed }) {
   const label =
-    state === "synced"
+    state === "local"
+      ? "Local only"
+      : state === "synced"
       ? "Synced"
       : state === "syncing"
         ? "Syncing"
@@ -152,6 +155,10 @@ async function undo() {
   await sync.restore(it.id);
 }
 
+// Where the server answers "are you there" and "what version are you": its own endpoints, or, in the static
+// version, a version.json written beside the app by the build (relative, so it works under any path).
+const VERSION_URL = LOCAL_ONLY ? "version.json" : "/api/version";
+
 const REFRESH_MESSAGES = {
   unreachable: "Can't reach the server, so nothing was changed.",
   "signed-out": "You may need to sign in again. Nothing was changed.",
@@ -171,6 +178,7 @@ async function refreshApp() {
   buttons.forEach((b) => (b.disabled = true));
   showRefreshMessage("Refreshing...");
   const result = await forceRefresh({
+    checkUrl: VERSION_URL,
     fetch: (p, i) => fetch(p, i),
     caches: window.caches,
     serviceWorker: navigator.serviceWorker,
@@ -186,7 +194,7 @@ function setUpInstall() {
     showNote("This page was opened without HTTPS, so browsers will not install it or let it work offline. Open it through an https:// address.");
     return;
   }
-  if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 }
 
 async function init() {
@@ -201,7 +209,7 @@ async function init() {
     showNote("This browser would not open local storage, so the stack cannot be kept. Try a normal (non-private) window.");
     return;
   }
-  sync = createSync({ storage, fetch: (p, i) => fetch(p, i), onChange: render, onStatus: renderStatus });
+  sync = createSync({ storage, fetch: (p, i) => fetch(p, i), onChange: render, onStatus: renderStatus, local: LOCAL_ONLY });
   render();
 
   $("push-form").addEventListener("submit", async (ev) => {
@@ -233,7 +241,7 @@ async function init() {
 
   const current = build?.VERSION ?? null; // no version means no update check
   const checkForUpdate = async () => {
-    const newer = await updateAvailable({ fetch: (p, i) => fetch(p, i), current });
+    const newer = await updateAvailable({ fetch: (p, i) => fetch(p, i), current, url: VERSION_URL });
     if (newer !== null) $("update").hidden = !newer;
   };
 
@@ -245,7 +253,8 @@ async function init() {
 
   // The stream reconnects itself (events.js). On iOS a stream can also look open after the app resumes from
   // the background while being dead, so it is recreated whenever the page becomes visible.
-  const events = createEventStream({ url: "/api/events", onSeq: syncNow });
+  // The static version has no server, so no live-update stream either.
+  const events = LOCAL_ONLY ? { connect() {} } : createEventStream({ url: "/api/events", onSeq: syncNow });
   events.connect();
 
   document.addEventListener("visibilitychange", () => {

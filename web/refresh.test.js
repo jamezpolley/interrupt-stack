@@ -50,6 +50,12 @@ describe("force refresh", () => {
     expect(e.calls.map((c) => c[0])).toEqual(["fetch"]);
   });
 
+  test("the reachability check can use another URL, as the static version does", async () => {
+    const e = env();
+    await forceRefresh({ ...e, checkUrl: "version.json" });
+    expect(e.calls[0]).toEqual(["fetch", "version.json", "no-store"]);
+  });
+
   test("the reachability check bypasses the service worker and the HTTP cache", async () => {
     const e = env();
     await forceRefresh(e);
@@ -99,6 +105,12 @@ describe("update check", () => {
     expect(await ask({ ok: true, redirected: false, json: async () => { throw new SyntaxError("not json"); } })).toBeNull();
     expect(await ask(json({}))).toBeNull();
     expect(await ask(json({ version: "bbb222" }), null)).toBeNull(); // this app does not know its own version
+  });
+
+  test("can ask a different URL for the version, as the static version does", async () => {
+    let seen;
+    await updateAvailable({ fetch: async (...a) => ((seen = a), json({ version: "x" })), current: "y", url: "version.json" });
+    expect(seen).toEqual(["version.json", { cache: "no-store" }]);
   });
 
   test("asks for /api/version without using any cache", async () => {
