@@ -110,7 +110,7 @@ function render() {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "primary";
-    b.textContent = stack.length > 1 ? "Pop" : "Pop, all done";
+    b.textContent = "Pop";
     b.addEventListener("click", () => removeItem(top));
     foot.append(a, b);
     card.append(l, t, foot);
