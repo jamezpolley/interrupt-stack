@@ -5,7 +5,8 @@ import { currentPane, pillFor } from "./pane.js";
 import { createEventStream } from "./events.js";
 import { canUpdateNow, describeServerUpdate, forceRefresh, readVersionInfo, requestServerCheck, updateServerNow } from "./refresh.js";
 import { completedToday } from "./today.js";
-import { detailsFor, doneRow, formatStart } from "./times.js";
+import { describeRow, doneRow, formatClock, formatStart, timeline, totalText, wasEdited } from "./times.js";
+import { applyDraft, changesFrom, clockText, dateText, parseEdited, rowTargets, sideEffectText, sideEffects, validateDraft } from "./edit.js";
 import { pushAgain } from "./again.js";
 import { displayText, renderLinked } from "./links.js";
 import { formatFailure } from "./debug-text.js";
@@ -146,6 +147,12 @@ function render() {
     const tx = document.createElement("span");
     tx.className = "item-text";
     renderLinked(tx, it.text, { links: false }); // inside a button: the same label as plain text
+    if (wasEdited(it, all)) {
+      const mark = document.createElement("small");
+      mark.className = "edited-tag";
+      mark.textContent = " edited";
+      tx.appendChild(mark);
+    }
     const start = document.createElement("span");
     start.className = "item-age col-start";
     start.textContent = row.start;
@@ -255,28 +262,165 @@ function showPane(id) {
 }
 
 // The details panel for a Done today row: every push and pop of that item, with running totals (derived on this device).
+// Edit mode (the Edit button) changes the item's title and the times of the rows, with the totals recomputing as you
+// type; Save sends the whole change, Cancel drops it. `ed` is null when not editing.
 let detailsFor_id = null;
+let ed = null; // {draft: {texts, times}} while editing: only what was changed, as new values
+
 function openDetails(id) {
   const all = sync.allItems();
   const item = all.find((i) => i.id === id);
-  const d = item && detailsFor(item, all, Date.now());
-  if (!d) return;
+  if (!item || !timeline(item, all)) return;
   detailsFor_id = id;
-  renderLinked($("details-title"), d.title);
-  $("details-summary").textContent = d.summary;
+  ed = null;
+  renderDetails();
+  $("details-dialog").showModal();
+}
+
+function startEdit() {
+  ed = { draft: { texts: {}, times: {} } };
+  renderDetails();
+}
+
+function endEdit() {
+  ed = null;
+  renderDetails();
+}
+
+function renderDetails() {
+  const base = sync.allItems();
+  const all = ed ? applyDraft(base, ed.draft) : base;
+  const origX = base.find((i) => i.id === detailsFor_id);
+  if (!origX) return $("details-dialog").close();
+  let x = all.find((i) => i.id === detailsFor_id);
+  let t = timeline(x, all);
+  let src = all;
+  // A draft that makes no valid history (the problem text says why) must not blank the table, or it could not be fixed.
+  if (!t) {
+    src = base;
+    x = origX;
+    t = timeline(x, base);
+  }
+  if (!t) return $("details-dialog").close();
+  const now = Date.now();
+
+  $("details-edit").hidden = $("details-again").hidden = !!ed;
+  $("details-save").hidden = $("details-cancel").hidden = !ed;
+
+  // The heading shows the text as people read it (links clickable). The edit box holds the raw stored text.
+  const title = $("details-title");
+  if (ed) {
+    title.textContent = "";
+    const inp = document.createElement("input");
+    inp.className = "title-edit";
+    inp.maxLength = 200;
+    inp.value = ed.draft.texts[origX.id] ?? origX.text;
+    inp.setAttribute("aria-label", "Text");
+    inp.addEventListener("input", () => {
+      if (inp.value === origX.text) delete ed.draft.texts[origX.id];
+      else ed.draft.texts[origX.id] = inp.value;
+      refreshChecks();
+    });
+    title.appendChild(inp);
+  } else renderLinked(title, x.text);
+
+  const edited = wasEdited(origX, base) ? " · edited" : "";
+  $("details-summary").textContent = `Started ${formatStart(t.start, now)} · Ended ${formatClock(t.end)}${edited}`;
+
   const body = $("details-rows");
   body.textContent = "";
-  for (const r of d.rows) {
+  const targets = rowTargets(x, src);
+  t.rows.forEach((r0, i) => {
+    const tg = targets[i];
+    const key = `${tg.id}:${tg.field}`;
+    const owner = base.find((it) => it.id === tg.id);
+    const r = { ...r0, t: ed?.draft.times[key] ?? r0.t }; // what was typed, even while the draft is invalid
     const tr = document.createElement("tr");
-    for (const [text, cls] of [[r.time, "t"], [r.what, "w"], [r.onTop, "n"], [r.wall, "n"]]) {
-      const td = document.createElement("td");
-      td.className = cls;
-      td.textContent = text;
-      tr.appendChild(td);
-    }
+    const tdT = document.createElement("td");
+    tdT.className = "t";
+    if (ed && owner?.removed) {
+      const orig = owner[tg.field];
+      const clock = document.createElement("input");
+      clock.className = "clock";
+      clock.type = "text";
+      clock.inputMode = "numeric";
+      clock.autocomplete = "off";
+      clock.placeholder = "HH:MM:SS";
+      clock.maxLength = 8;
+      clock.value = clockText(r.t);
+      clock.setAttribute("aria-label", `${tg.field === "ts" ? "Pushed" : "Ended"} time, 24 hour, HH:MM or HH:MM:SS, for ${displayText(owner.text)}`);
+      tdT.appendChild(clock);
+      let day = null;
+      if (dateText(orig) !== dateText(now) || dateText(r.t) !== dateText(now)) {
+        day = document.createElement("input");
+        day.className = "day";
+        day.type = "date";
+        day.max = dateText(now);
+        day.value = dateText(r.t);
+        day.setAttribute("aria-label", "Date");
+        tdT.appendChild(day);
+      }
+      const apply = () => {
+        const ms = parseEdited(orig, clock.value, day ? day.value : dateText(orig));
+        clock.classList.toggle("bad", ms === null);
+        if (ms === null) return false;
+        if (ms === orig) delete ed.draft.times[key];
+        else ed.draft.times[key] = ms;
+        return true;
+      };
+      clock.addEventListener("input", () => apply() && refreshChecks(true));
+      clock.addEventListener("change", () => apply() && renderDetails());
+      day?.addEventListener("change", () => apply() && renderDetails());
+    } else tdT.textContent = formatStart(r.t, now);
+    const tdW = document.createElement("td");
+    tdW.className = "w";
+    tdW.textContent = describeRow(r);
+    const tdO = document.createElement("td");
+    tdO.className = "n";
+    tdO.textContent = totalText(r.onTop);
+    const tdWall = document.createElement("td");
+    tdWall.className = "n";
+    tdWall.textContent = totalText(r.wall);
+    tr.append(tdT, tdW, tdO, tdWall);
     body.appendChild(tr);
+  });
+  refreshChecks();
+}
+
+// Problems, side effects and the Save button from the current draft; while typing, also the summary and the totals.
+function refreshChecks(liveNumbers = false) {
+  if (!ed) {
+    $("details-problems").hidden = $("details-effects").hidden = true;
+    return;
   }
-  $("details-dialog").showModal();
+  const base = sync.allItems();
+  const problems = validateDraft(base, ed.draft, Date.now());
+  const all = applyDraft(base, ed.draft);
+  const x = all.find((i) => i.id === detailsFor_id);
+  const t = x && timeline(x, all);
+  if (!t && !problems.length) problems.push("Those times do not make a valid history.");
+  const p = $("details-problems");
+  p.hidden = !problems.length;
+  p.textContent = problems.join(" ");
+  const fx = problems.length ? [] : sideEffects(base, ed.draft, detailsFor_id);
+  const e = $("details-effects");
+  e.hidden = !fx.length;
+  e.textContent = fx.length ? `This also changes: ${fx.map(sideEffectText).join("; ")}` : "";
+  $("details-save").disabled = problems.length > 0 || changesFrom(base, ed.draft).length === 0;
+  if (liveNumbers && t) {
+    const edited = wasEdited(base.find((i) => i.id === detailsFor_id), base) ? " · edited" : "";
+    $("details-summary").textContent = `Started ${formatStart(t.start, Date.now())} · Ended ${formatClock(t.end)}${edited}`;
+    const rows = $("details-rows").children;
+    if (rows.length === t.rows.length) t.rows.forEach((r, i) => ((rows[i].children[2].textContent = totalText(r.onTop)), (rows[i].children[3].textContent = totalText(r.wall))));
+  }
+}
+
+async function saveEdit() {
+  const base = sync.allItems();
+  const changes = changesFrom(base, ed.draft);
+  $("details-save").disabled = true;
+  for (const c of changes) await sync.edit(c.id, c);
+  endEdit();
 }
 
 function offerUndo(it, kind = "stack") {
@@ -479,6 +623,9 @@ async function init() {
   });
   $("debug-close").addEventListener("click", () => $("debug-dialog").close());
   $("details-close").addEventListener("click", () => $("details-dialog").close());
+  $("details-edit").addEventListener("click", startEdit);
+  $("details-cancel").addEventListener("click", endEdit);
+  $("details-save").addEventListener("click", saveEdit);
   // Push again: a new stack item with the same text (linked to this one), then the panel closes on the new top item.
   $("details-again").addEventListener("click", async () => {
     const id = detailsFor_id;
@@ -495,6 +642,7 @@ async function init() {
   $("details-dialog").addEventListener("close", () => {
     const id = detailsFor_id;
     detailsFor_id = null;
+    ed = null;
     if (id) document.querySelector(`#done [data-item-id="${CSS.escape(id)}"]`)?.focus();
   });
   $("debug-copy").addEventListener("click", async () => {

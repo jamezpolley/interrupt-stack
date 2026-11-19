@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { doneRow, formatClock, formatDuration, formatStart, timeline, timeOnTop, detailsFor } from "./times.js";
+import { doneRow, formatClock, formatDuration, formatStart, timeline, timeOnTop, detailsFor, wasEdited, describeRow } from "./times.js";
 
 const MIN = 60000;
 // Items are (id, ts, at, removed). Times are minutes from a base so the arithmetic is easy to read.
@@ -454,5 +454,35 @@ describe("detailsFor: the words in the panel", () => {
 
   test("nothing to show for an item with no end time", () => {
     expect(detailsFor(mk("x", "x", 0, null), [], NOWD, "en-US")).toBeNull();
+  });
+});
+
+describe("wasEdited", () => {
+  const A = { id: "A", text: "a", ts: 1000, at: 9000, removed: true, seq: 1 };
+  const B = { id: "B", text: "b", ts: 3000, at: 5000, removed: true, seq: 2 };
+  test("false when nothing involved was edited", () => {
+    expect(wasEdited(A, [A, B])).toBe(false);
+  });
+  test("true when the item itself was edited", () => {
+    const e = { ...A, edited_at: 123 };
+    expect(wasEdited(e, [e, B])).toBe(true);
+  });
+  test("true when an item in its timeline was edited, because that changes this one's numbers", () => {
+    const e = { ...B, edited_at: 123 };
+    expect(wasEdited(A, [A, e])).toBe(true);
+  });
+  test("an unrelated edited item does not count", () => {
+    const far = { id: "Z", text: "z", ts: 50000, at: 60000, removed: true, seq: 3, edited_at: 1 };
+    expect(wasEdited(A, [A, B, far])).toBe(false);
+  });
+});
+
+describe("describeRow", () => {
+  test("is the same wording the details rows use", () => {
+    expect(describeRow({ kind: "pushed" })).toBe("Pushed");
+    expect(describeRow({ kind: "paused", who: "Sam" })).toBe("Paused: Sam pushed");
+    expect(describeRow({ kind: "back", who: "Sam" })).toBe("Back on top: Sam ended");
+    expect(describeRow({ kind: "dropped", who: "Sam" })).toBe("Dropped: Sam still on top");
+    expect(describeRow({ kind: "popped" })).toBe("Popped");
   });
 });

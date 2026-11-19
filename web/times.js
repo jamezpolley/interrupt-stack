@@ -133,7 +133,7 @@ export function doneRow(item, all, locale, nowMs = Date.now()) {
   return { start, end: formatClock(item.at), duration: d || DASH };
 }
 
-const totalText = (ms) => (ms === 0 ? "0 min" : formatDuration(ms));
+export const totalText = (ms) => (ms === 0 ? "0 min" : formatDuration(ms));
 const WHAT = {
   pushed: () => "Pushed",
   paused: (r) => `Paused: ${displayText(r.who)} pushed`,
@@ -141,6 +141,21 @@ const WHAT = {
   popped: () => "Popped",
   dropped: (r) => (r.who ? `Dropped: ${displayText(r.who)} still on top` : "Dropped"),
 };
+
+/** The "What happened" text of a timeline row (links shown as their labels). */
+export const describeRow = (r) => WHAT[r.kind](r);
+
+/**
+ * Whether this item's numbers rest on an edit: it was edited itself, or an item in its timeline (one pushed above it)
+ * was, since that moves its totals too. `edited_at` is set by the server (or locally, at once) when an edit changes something.
+ */
+export function wasEdited(item, all) {
+  if (item?.edited_at != null) return true;
+  const t = timeline(item, all);
+  if (!t) return false;
+  const byId = new Map(all.map((i) => [i.id, i]));
+  return t.rows.some((r) => r.whoId && byId.get(r.whoId)?.edited_at != null);
+}
 
 /**
  * The details panel for a Done today item: the title (its text), a summary line, and the timeline as display strings.
@@ -153,6 +168,6 @@ export function detailsFor(item, all, nowMs, locale) {
   return {
     title: item.text,
     summary: `Started ${formatStart(t.start, nowMs, locale)} · Ended ${formatClock(t.end)}`,
-    rows: t.rows.map((r) => ({ time: formatStart(r.t, nowMs, locale), what: WHAT[r.kind](r), onTop: totalText(r.onTop), wall: totalText(r.wall) })),
+    rows: t.rows.map((r) => ({ time: formatStart(r.t, nowMs, locale), what: describeRow(r), onTop: totalText(r.onTop), wall: totalText(r.wall) })),
   };
 }

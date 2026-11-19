@@ -1,0 +1,97 @@
+import { describe, expect, test } from "bun:test";
+import { applyDraft, changesFrom, parseEdited, rowTargets, sideEffects, validateDraft, clockText } from "./edit.js";
+
+const m = (h, min = 0) => new Date(2026, 10, 19, h, min).getTime();
+const item = (id, ts, at, removed = true, text = id) => ({ id, text, ts, at, removed, seq: 1 });
+// A pushed 9:00, B pushed 9:10 above it, B popped 9:30, A popped 10:00.
+const A = item("A", m(9), m(10));
+const B = item("B", m(9, 10), m(9, 30));
+const all = [A, B];
+const NOW = m(18);
+
+describe("rowTargets", () => {
+  test("each row edits the field of the item it belongs to", () => {
+    expect(rowTargets(A, all)).toEqual([
+      { id: "A", field: "ts" },
+      { id: "B", field: "ts" },
+      { id: "B", field: "at" },
+      { id: "A", field: "at" },
+    ]);
+  });
+});
+
+describe("validateDraft", () => {
+  test("a good edit has no problems", () => {
+    expect(validateDraft(all, { times: { "B:at": m(9, 20) } }, NOW)).toEqual([]);
+  });
+  test("end before start", () => {
+    expect(validateDraft(all, { times: { "B:at": m(9, 5) } }, NOW).join()).toMatch(/end before it started/);
+  });
+  test("future time", () => {
+    expect(validateDraft(all, { times: { "A:at": NOW + 60000 } }, NOW).join()).toMatch(/future/);
+  });
+  test("times of a live item cannot change", () => {
+    const live = item("L", m(9, 15), m(9, 15), false);
+    expect(validateDraft([...all, live], { times: { "L:ts": m(9, 16) } }, NOW).join()).toMatch(/still on the stack/);
+  });
+  test("empty and over-long text", () => {
+    expect(validateDraft(all, { texts: { A: "  " } }, NOW).join()).toMatch(/empty/);
+    expect(validateDraft(all, { texts: { A: "x".repeat(201) } }, NOW).join()).toMatch(/200/);
+  });
+});
+
+describe("sideEffects and changes", () => {
+  test("moving B's push to before A's changes A's time on top", () => {
+    const draft = { times: { "B:ts": m(8, 50) } };
+    expect(applyDraft(all, draft)[1].ts).toBe(m(8, 50));
+    expect(sideEffects(all, draft, "A").map((e) => e.text)).toEqual(["B"]); // now A sat above B, so B's time on top shrinks
+    const other = sideEffects(all, { times: { "B:at": m(9, 20) } }, "B");
+    expect(other.map((e) => e.text)).toEqual(["A"]); // A gets back 10 minutes
+  });
+  test("an empty draft changes nothing (open Edit, then Cancel)", () => {
+    expect(changesFrom(all, { texts: {}, times: {} })).toEqual([]);
+    expect(validateDraft(all, { texts: {}, times: {} }, NOW)).toEqual([]);
+    expect(sideEffects(all, { texts: {}, times: {} }, "A")).toEqual([]);
+  });
+  test("renaming the item changes no totals", () => {
+    expect(sideEffects(all, { texts: { A: "renamed" } }, "A")).toEqual([]);
+  });
+  test("changesFrom lists only the fields that differ", () => {
+    expect(changesFrom(all, { texts: { A: "A" }, times: { "B:at": m(9, 20) } })).toEqual([{ id: "B", at: m(9, 20) }]);
+    expect(changesFrom(all, { texts: { A: "renamed" } })).toEqual([{ id: "A", text: "renamed" }]);
+  });
+});
+
+describe("parseEdited", () => {
+  const withSec = (h, min, sec, ms = 0) => new Date(2026, 10, 19, h, min, sec, ms).getTime();
+  test("the same minute and day, seconds omitted, keeps the original exactly", () => {
+    const t = withSec(9, 5, 42, 321);
+    expect(parseEdited(t, "09:05")).toBe(t);
+  });
+  test("a changed minute with seconds omitted keeps the original seconds", () => {
+    expect(parseEdited(withSec(9, 5, 42, 321), "9:07")).toBe(withSec(9, 7, 42, 321));
+  });
+  test("typed seconds are used, with no milliseconds", () => {
+    expect(parseEdited(withSec(9, 5, 42, 321), "09:07:15")).toBe(withSec(9, 7, 15));
+  });
+  test("typed seconds equal to the original keep its milliseconds", () => {
+    const t = withSec(9, 5, 42, 321);
+    expect(parseEdited(t, "09:05:42")).toBe(t);
+  });
+  test("a changed date keeps the time of day and seconds", () => {
+    const out = parseEdited(withSec(9, 0, 30), "09:00", "2026-11-18");
+    expect(new Date(out).getDate()).toBe(18);
+    expect(new Date(out).getSeconds()).toBe(30);
+  });
+  test("junk is null", () => {
+    for (const bad of ["25:00", "9:7", "09:00:60", "09:00:5", "09", "", "09:00:00:00", "09.00"]) expect(parseEdited(withSec(9, 0, 0), bad)).toBeNull();
+    expect(parseEdited(withSec(9, 0, 0), "09:00", "nope")).toBeNull();
+  });
+});
+
+describe("clockText", () => {
+  test("is HH:MM:SS, 24 hour", () => {
+    expect(clockText(new Date(2026, 10, 19, 7, 5, 9).getTime())).toBe("07:05:09");
+    expect(clockText(new Date(2026, 10, 19, 0, 0, 0).getTime())).toBe("00:00:00");
+  });
+});
