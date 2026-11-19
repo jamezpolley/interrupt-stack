@@ -33,7 +33,15 @@ function showNote(text) {
 const STORAGE_NOTE = "This device could not save your changes locally. Keep this page open until they sync.";
 let storageNoteShown = false;
 
-function renderStatus({ state, pending, storageFailed, error }) {
+// An empty stack on a device that has never reached the server may just mean nothing has arrived yet.
+let showingNeverSynced = false;
+
+function renderStatus({ state, pending, storageFailed, error, neverSynced }) {
+  const unsynced = !!neverSynced && (state === "offline" || state === "error");
+  if (unsynced !== showingNeverSynced) {
+    showingNeverSynced = unsynced;
+    if (sync) render();
+  }
   const label = statusLabel({ state, pending, error });
   $("status").textContent = label;
   $("dot").className = "dot" + (state === "synced" ? " ok" : state === "offline" || state === "error" ? " warn" : "");
@@ -51,7 +59,9 @@ function render() {
   if (!stack.length) {
     const e = document.createElement("div");
     e.className = "empty";
-    e.textContent = "Empty.";
+    e.textContent = showingNeverSynced
+      ? "Never synced, nothing to show yet"
+      : "Empty.";
     wrap.appendChild(e);
   } else {
     const top = stack[0];

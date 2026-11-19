@@ -152,3 +152,31 @@ describe("failure kinds", () => {
     expect(sync.status().error).toBeUndefined();
   });
 });
+
+describe("never synced", () => {
+  test("a device that has never reached the server says so, until a sync works", async () => {
+    let fail = true;
+    const { sync } = await run((p, i) => (fail ? Promise.reject(new TypeError("x")) : ok(p, i)), { queued: false });
+    expect(sync.status().neverSynced).toBe(true);
+    fail = false;
+    await sync.syncNow();
+    expect(sync.status().neverSynced).toBeUndefined();
+  });
+
+  test("a device that synced before is not flagged when it later fails", async () => {
+    const storage = memStorage();
+    const first = createSync({ storage, fetch: async (p, i) => ok(p, i) });
+    await first.start();
+    await first.syncNow();
+    const storageAfter = { ...storage, load: async () => ({ items: [], dirty: [], lastSeq: 0, epoch: "e1" }) };
+    const second = createSync({ storage: storageAfter, fetch: async () => Promise.reject(new TypeError("x")) });
+    await second.start();
+    expect(second.status().neverSynced).toBeUndefined();
+  });
+
+  test("the static version is never flagged", async () => {
+    const sync = createSync({ storage: memStorage(), fetch: async () => Promise.reject(new TypeError("x")), local: true });
+    await sync.start();
+    expect(sync.status().neverSynced).toBeUndefined();
+  });
+});

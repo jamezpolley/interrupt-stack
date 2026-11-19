@@ -47,7 +47,7 @@ export function createSync({ storage, fetch, now = () => Date.now(), online = ()
   let running = null;
   let rerun = false;
 
-  const status = () => ({ state, pending: dirty.size, ...(lastError && state !== "syncing" ? { error: lastError } : {}), ...(storageFailed ? { storageFailed: true } : {}) });
+  const status = () => ({ state, pending: dirty.size, ...(!local && epoch === null ? { neverSynced: true } : {}), ...(lastError && state !== "syncing" ? { error: lastError } : {}), ...(storageFailed ? { storageFailed: true } : {}) });
   const setState = (s, error = null) => {
     state = s;
     lastError = error;
