@@ -5,20 +5,82 @@
 // Client errors that will not fix themselves by retrying the same request straight away.
 const permanentlyRejected = (status) => status >= 400 && status < 500 && status !== 408 && status !== 429;
 
+// What went wrong with a request, as far as the UI needs to tell the person: a kind, plus the HTTP status when there is one.
+class SyncFailure extends Error {
+  constructor(error, res = null, body) {
+    super(error.kind);
+    this.error = error;
+    this.res = res; // the response behind it, for the debug detail
+    this.body = body; // its body text, when it was already read
+  }
+}
+
+const BODY_LIMIT = 4096;
+const NEVER_KEPT = new Set(["set-cookie", "set-cookie2", "cookie", "authorization", "proxy-authorization"]);
+
+// What the browser lets us see of a failed response, kept in memory only for the Debug panel.
+async function describeResponse(res, body) {
+  if (body === undefined) {
+    try {
+      body = await res.clone().text();
+    } catch {
+      body = null;
+    }
+  }
+  const headers = [];
+  try {
+    for (const [k, v] of res.headers ?? []) if (!NEVER_KEPT.has(k.toLowerCase())) headers.push([k, v]);
+  } catch {}
+  const out = { status: res.status, statusText: res.statusText ?? "", type: res.type ?? "", redirected: !!res.redirected, url: res.url ?? "", headers, body };
+  if (typeof body === "string" && body.length > BODY_LIMIT) {
+    out.body = body.slice(0, BODY_LIMIT);
+    out.bodyTruncated = true;
+  }
+  return out;
+}
+
+const isJson = (res) => /\bjson\b/i.test(res.headers?.get?.("content-type") ?? "");
+
+// A proxy that wants a sign-in answers an API call with a redirect to its login page, a 401/403, or the login page itself.
+// With `redirect: "manual"` a redirect arrives as an "opaqueredirect" response (status 0).
+const wantsSignIn = (res) => res.type === "opaqueredirect" || res.redirected || res.status === 401 || res.status === 403;
+
+// Throws the matching failure unless the response is one the app can use. Callers handle 4xx themselves where they must.
+function assertUsable(res) {
+  if (wantsSignIn(res)) throw new SyncFailure({ kind: "sign-in" }, res);
+  if (res.status >= 500) throw new SyncFailure({ kind: "server-error", status: res.status }, res);
+  if (!res.ok) throw new SyncFailure({ kind: "client-error", status: res.status }, res);
+  if (!isJson(res)) throw new SyncFailure({ kind: "sign-in" }, res); // HTML where JSON was expected: a login page
+}
+
+async function readJson(res) {
+  let text = null;
+  try {
+    text = await res.text();
+    return JSON.parse(text);
+  } catch {
+    throw new SyncFailure({ kind: "bad-reply" }, res, text);
+  }
+}
+
 // `local` is the static version: nothing is ever sent anywhere, so there is no queue and no network use.
-export function createSync({ storage, fetch, now = () => Date.now(), onChange = () => {}, onStatus = () => {}, local = false }) {
+export function createSync({ storage, fetch, now = () => Date.now(), online = () => true, onChange = () => {}, onStatus = () => {}, local = false }) {
   const items = new Map(); // id -> {id, text, ts, at, removed, seq}; `at` is when it last changed state, on this device's clock
   const dirty = new Set(); // ids with changes the server has not acknowledged
   let lastSeq = 0;
   let epoch = null; // identifies the server database we last synced with
   let state = local ? "local" : "syncing";
+  let lastFailure = null; // raw detail of the latest failed call, in memory only
+  let lastError = null; // why the latest pass failed; null after a pass that worked
   let storageFailed = false;
   let running = null;
   let rerun = false;
 
-  const status = () => ({ state, pending: dirty.size, ...(storageFailed ? { storageFailed: true } : {}) });
-  const setState = (s) => {
+  const status = () => ({ state, pending: dirty.size, ...(!local && epoch === null ? { neverSynced: true } : {}), ...(lastError && state !== "syncing" ? { error: lastError } : {}), ...(storageFailed ? { storageFailed: true } : {}) });
+  const setState = (s, error = null) => {
     state = s;
+    lastError = error;
+    if (!error) lastFailure = null;
     onStatus(status());
   };
 
@@ -50,8 +112,7 @@ export function createSync({ storage, fetch, now = () => Date.now(), onChange = 
   }
   const setItem = (item) => setItems([item]);
 
-  const newItem = (text, ts) => {
-    const id = `s-${ts.toString(36)}${Math.random().toString(36).slice(2, 6).padEnd(4, "0")}`;
+  const newItem = (text, ts, id = `s-${ts.toString(36)}${Math.random().toString(36).slice(2, 6).padEnd(4, "0")}`) => {
     return { id, text, ts, at: ts, removed: false, seq: 0 };
   };
 
@@ -60,21 +121,26 @@ export function createSync({ storage, fetch, now = () => Date.now(), onChange = 
 
   async function pass() {
     setState("syncing");
+    let req = null; // the call in flight, for the failure detail
     try {
-      const rejected = new Set();
+      const rejected = new Map(); // id -> status
+      const init = { redirect: "manual" };
       for (const id of [...dirty]) {
         const sent = items.get(id);
-        const res = await fetch(`/api/items/${encodeURIComponent(id)}`, {
+        req = { method: "PUT", url: `/api/items/${encodeURIComponent(id)}` };
+        const res = await fetch(req.url, {
+          ...init,
           method: "PUT",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ text: sent.text, ts: sent.ts, removed: sent.removed, at: sent.at }),
         });
-        if (permanentlyRejected(res.status)) {
-          rejected.add(id); // keep it, but do not let it block the rest of the queue
+        if (!wantsSignIn(res) && permanentlyRejected(res.status)) {
+          if (!rejected.size) lastFailure = { at: now(), request: req, online: online(), response: await describeResponse(res) };
+          rejected.set(id, res.status); // keep it, but do not let it block the rest of the queue
           continue;
         }
-        if (!res.ok) throw new Error(`PUT ${id} failed: ${res.status}`);
-        const saved = await res.json();
+        assertUsable(res);
+        const saved = await readJson(res);
         if (items.get(id) === sent) {
           items.set(id, saved);
           dirty.delete(id);
@@ -83,9 +149,10 @@ export function createSync({ storage, fetch, now = () => Date.now(), onChange = 
         }
       }
 
-      const res = await fetch(`/api/items?since=${lastSeq}`);
-      if (!res.ok) throw new Error(`GET items failed: ${res.status}`);
-      const data = await res.json();
+      req = { method: "GET", url: `/api/items?since=${lastSeq}` };
+      const res = await fetch(req.url, init);
+      assertUsable(res);
+      const data = await readJson(res);
 
       const replaced = data.seq < lastSeq || (epoch && data.epoch && data.epoch !== epoch);
       if (replaced) {
@@ -114,10 +181,16 @@ export function createSync({ storage, fetch, now = () => Date.now(), onChange = 
       await safe(() => storage.setLastSeq(lastSeq));
       onChange();
       const changedMeanwhile = [...dirty].some((id) => !rejected.has(id));
-      setState(rejected.size ? "error" : changedMeanwhile ? "syncing" : "synced");
+      if (rejected.size) setState("error", { kind: "client-error", status: [...rejected.values()][0] });
+      else setState(changedMeanwhile ? "syncing" : "synced");
       if (changedMeanwhile) rerun = true;
-    } catch {
-      setState("offline");
+    } catch (e) {
+      const detail = { at: now(), request: req, online: online() };
+      if (e instanceof SyncFailure && e.res) detail.response = await describeResponse(e.res, e.body);
+      else if (!(e instanceof SyncFailure)) detail.error = { name: e?.name ?? "Error", message: String(e?.message ?? e) };
+      lastFailure = detail;
+      // A TypeError from fetch means no answer at all: the device has no network, or the server cannot be reached.
+      setState("offline", e instanceof SyncFailure ? e.error : { kind: online() ? "unreachable" : "no-network" });
     }
   }
 
@@ -167,10 +240,18 @@ export function createSync({ storage, fetch, now = () => Date.now(), onChange = 
       return [...items.values()];
     },
 
-    async push(text) {
+    /** Whether an item with this id exists here, removed or not. */
+    has: (id) => items.has(id),
+
+    /**
+     * Push a task. `opts.id` pins the id (the queue uses it so that starting a queued task twice is the same push):
+     * if that id is already here, removed or not, nothing changes and the existing item is returned.
+     */
+    async push(text, opts = {}) {
       const trimmed = String(text ?? "").trim();
       if (!trimmed) return null;
-      const item = newItem(trimmed, now());
+      if (opts.id && items.has(opts.id)) return items.get(opts.id);
+      const item = newItem(trimmed, now(), opts.id);
       await setItem(item);
       return item;
     },
@@ -199,5 +280,7 @@ export function createSync({ storage, fetch, now = () => Date.now(), onChange = 
 
     syncNow,
     status,
+    /** Raw detail of the latest failed call (memory only), or null. */
+    lastFailure: () => lastFailure,
   };
 }

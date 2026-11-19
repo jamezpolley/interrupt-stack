@@ -1,15 +1,20 @@
 import { createSync } from "./sync.js";
-import { openStorage } from "./idb.js";
+import { openStorage, QUEUE_DB_NAME } from "./idb.js";
+import { createQueue, QUEUE_LABEL } from "./queue.js";
 import { createEventStream } from "./events.js";
 import { canUpdateNow, describeServerUpdate, forceRefresh, readVersionInfo, requestServerCheck, updateServerNow } from "./refresh.js";
 import { completedToday } from "./today.js";
+import { formatFailure } from "./debug-text.js";
+import { statusLabel } from "./status-text.js";
 import { LOCAL_ONLY } from "./config.js";
+import { startInstallPrompt } from "./install.js";
 
 const $ = (id) => document.getElementById(id);
 const UNDO_MS = 15000;
 
 let sync;
-let lastRemoved = null;
+let queue;
+let lastRemoved = null; // { it, kind: "stack" | "queue" }
 let undoTimer = null;
 
 function ago(ts) {
@@ -31,19 +36,42 @@ function showNote(text) {
 const STORAGE_NOTE = "This device could not save your changes locally. Keep this page open until they sync.";
 let storageNoteShown = false;
 
-function renderStatus({ state, pending, storageFailed }) {
-  const label =
-    state === "local"
-      ? "Local only"
-      : state === "synced"
-      ? "Synced"
-      : state === "syncing"
-        ? "Syncing"
-        : state === "error"
-          ? `Sync problem, ${pending} unsent`
-          : pending
-            ? `Offline, ${pending} unsent`
-            : "Offline";
+// One line for both structures: the worst state of the two, and every unsent change counted. The failure kind (and
+// so the Debug link) comes from the stack, which records it; a failure only the Later sync has shows as plain
+// "Offline" / "Sync problem".
+function combinedStatus() {
+  const st = sync.status();
+  const parts = [st, queue?.status()].filter(Boolean);
+  const state = ["error", "offline", "syncing", "synced"].find((x) => parts.some((p) => p.state === x)) ?? "local";
+  return {
+    state,
+    pending: parts.reduce((n, p) => n + p.pending, 0),
+    storageFailed: parts.some((p) => p.storageFailed),
+    ...(st.state === state && st.error ? { error: st.error } : {}),
+    ...(st.neverSynced ? { neverSynced: true } : {}),
+  };
+}
+// When only the Later sync has just failed, have the stack try too: it knows how to name a failure (and keeps the
+// detail the Debug link shows), and both use the same network, so it will normally fail for the same reason.
+let queueWasOffline = false;
+function updateStatus() {
+  const q = queue?.status().state === "offline";
+  if (q && !queueWasOffline && sync.status().state === "synced") sync.syncNow().catch(() => {});
+  queueWasOffline = q;
+  renderStatus(combinedStatus());
+}
+
+// An empty stack on a device that has never reached the server may just mean nothing has arrived yet.
+let showingNeverSynced = false;
+
+function renderStatus({ state, pending, storageFailed, error, neverSynced }) {
+  const unsynced = !!neverSynced && (state === "offline" || state === "error");
+  if (unsynced !== showingNeverSynced) {
+    showingNeverSynced = unsynced;
+    if (sync) render();
+  }
+  $("debug-btn").hidden = !(error && sync?.lastFailure());
+  const label = statusLabel({ state, pending, error });
   $("status").textContent = label;
   $("dot").className = "dot" + (state === "synced" ? " ok" : state === "offline" || state === "error" ? " warn" : "");
   if (storageFailed && !storageNoteShown) showNote(STORAGE_NOTE);
@@ -60,7 +88,9 @@ function render() {
   if (!stack.length) {
     const e = document.createElement("div");
     e.className = "empty";
-    e.textContent = "Empty.";
+    e.textContent = showingNeverSynced
+      ? "Never synced, nothing to show yet"
+      : "Empty.";
     wrap.appendChild(e);
   } else {
     const top = stack[0];
@@ -105,6 +135,8 @@ function render() {
     doneList.appendChild(li);
   }
 
+  renderQueue();
+
   const under = $("under");
   under.textContent = "";
   const rest = stack.slice(1);
@@ -131,8 +163,59 @@ function render() {
   });
 }
 
-function offerUndo(it) {
-  lastRemoved = it;
+function renderQueue() {
+  const items = queue ? queue.queue() : [];
+  $("to-queue").textContent = items.length ? `${QUEUE_LABEL} ${items.length} \u203a` : `${QUEUE_LABEL} \u203a`;
+  $("queue-empty").hidden = items.length > 0;
+  const list = $("queue");
+  list.textContent = "";
+  for (const it of items) {
+    const li = document.createElement("li");
+    const tx = document.createElement("span");
+    tx.className = "item-text";
+    tx.textContent = it.text;
+    const go = document.createElement("button");
+    go.type = "button";
+    go.className = "start";
+    go.textContent = "Start";
+    go.setAttribute("aria-label", `Start ${it.text}`);
+    go.addEventListener("click", () => queue.promote(it.id));
+    const x = document.createElement("button");
+    x.type = "button";
+    x.className = "drop";
+    x.textContent = "Drop";
+    x.setAttribute("aria-label", `Drop ${it.text} from ${QUEUE_LABEL}`);
+    x.addEventListener("click", async () => {
+      await queue.drop(it.id);
+      offerUndo(it, "queue");
+    });
+    li.append(tx, go, x);
+    list.appendChild(li);
+  }
+}
+
+// Everything on screen that names the queue takes its words from QUEUE_LABEL (queue.js), so renaming is one line.
+function labelQueue() {
+  const name = QUEUE_LABEL;
+  document.querySelectorAll("[data-queue-label]").forEach((el) => (el.textContent = name));
+  document.querySelectorAll("[data-queue-aria]").forEach((el) => el.setAttribute("aria-label", name));
+  $("queue-input").placeholder = "Something for later";
+  $("queue-input").setAttribute("aria-label", `New task to add to ${name}`);
+  $("queue-add").textContent = "Add";
+  $("queue-add").setAttribute("aria-label", `Add to ${name}`);
+  $("queue-empty").textContent = `Nothing in ${name}.`;
+  $("to-queue").setAttribute("aria-label", `Show ${name}`);
+  $("to-stack").setAttribute("aria-label", "Show the stack");
+}
+
+// On a phone the panes sit side by side and scroll sideways; the edge tabs do the same as a swipe.
+function showPane(id) {
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  $(id).scrollIntoView({ behavior: reduce ? "auto" : "smooth", inline: "start", block: "nearest" });
+}
+
+function offerUndo(it, kind = "stack") {
+  lastRemoved = { it, kind };
   $("toast-text").textContent = `Removed: ${it.text}`;
   $("toast").hidden = false;
   clearTimeout(undoTimer);
@@ -148,11 +231,11 @@ async function removeItem(it) {
 }
 
 async function undo() {
-  const it = lastRemoved;
-  if (!it) return;
+  const last = lastRemoved;
+  if (!last) return;
   $("toast").hidden = true;
   lastRemoved = null;
-  await sync.restore(it.id);
+  await (last.kind === "queue" ? queue : sync).restore(last.it.id);
 }
 
 // Where the server answers "are you there" and "what version are you": its own endpoints, or, in the static
@@ -235,6 +318,15 @@ function setUpInstall() {
 }
 
 async function init() {
+  // Early, so a beforeinstallprompt fired during start-up is not missed. Shows nothing unless install is possible.
+  try {
+    startInstallPrompt({
+      win: window,
+      nav: navigator,
+      storage: localStorage,
+      els: { box: $("install"), text: $("install-text"), install: $("install-btn"), dismiss: $("install-dismiss") },
+    });
+  } catch {} // localStorage itself can throw; the prompt is optional
   // What this copy of the app was built from (cached with the app). A server without /version.js has none.
   const build = await import("./version.js").catch(() => null);
   $("version").textContent =
@@ -251,7 +343,19 @@ async function init() {
     showNote("This browser would not open local storage, so the stack cannot be kept. Try a normal (non-private) window.");
     return;
   }
-  sync = createSync({ storage, fetch: (p, i) => fetch(p, i), onChange: render, onStatus: renderStatus, local: LOCAL_ONLY });
+  // The queue has its own database, so a failure there never takes the stack down with it.
+  let queueStorage = {};
+  try {
+    queueStorage = await openStorage(QUEUE_DB_NAME);
+  } catch {}
+  // A start can be interrupted between its two parts; whenever either side changes, finish any that were.
+  const changed = () => {
+    render();
+    queue?.reconcile().catch(() => {});
+  };
+  sync = createSync({ storage, fetch: (p, i) => fetch(p, i), onChange: changed, onStatus: updateStatus, online: () => navigator.onLine, local: LOCAL_ONLY });
+  queue = createQueue({ storage: queueStorage, fetch: (p, i) => fetch(p, i), stack: sync, onChange: changed, onStatus: updateStatus, local: LOCAL_ONLY });
+  labelQueue();
   render();
 
   $("push-form").addEventListener("submit", async (ev) => {
@@ -277,7 +381,37 @@ async function init() {
     else if (result.removed) offerUndo(result.removed);
     inp.focus();
   });
+  $("queue-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const inp = $("queue-input");
+    const text = inp.value.trim();
+    if (!text) return;
+    inp.value = "";
+    const item = await queue.add(text);
+    if (!item) inp.value = text;
+    inp.focus();
+  });
+  $("to-queue").addEventListener("click", () => showPane("pane-queue"));
+  $("to-stack").addEventListener("click", () => showPane("pane-stack"));
   $("undo-btn").addEventListener("click", undo);
+  $("debug-btn").addEventListener("click", () => {
+    const f = sync.lastFailure();
+    if (!f) return;
+    $("debug-text").textContent = formatFailure(f);
+    $("debug-copy-msg").hidden = true;
+    $("debug-dialog").showModal();
+  });
+  $("debug-close").addEventListener("click", () => $("debug-dialog").close());
+  $("debug-copy").addEventListener("click", async () => {
+    let msg = "Copied.";
+    try {
+      await navigator.clipboard.writeText($("debug-text").textContent);
+    } catch {
+      msg = "Could not copy. Select the text and copy it by hand.";
+    }
+    $("debug-copy-msg").textContent = msg;
+    $("debug-copy-msg").hidden = false;
+  });
   $("refresh-btn").addEventListener("click", refreshApp);
   $("update-btn").addEventListener("click", refreshApp);
   $("update-now-btn").addEventListener("click", updateNow);
@@ -298,10 +432,13 @@ async function init() {
     }
   };
 
-  await sync.start();
-  renderStatus(sync.status());
+  await Promise.all([sync.start(), queue.start()]);
+  updateStatus();
 
-  const syncNow = () => sync.syncNow().catch(() => {});
+  const syncNow = () => {
+    sync.syncNow().catch(() => {});
+    queue.syncNow().catch(() => {});
+  };
   checkForUpdate();
   // After a Refresh, the server was asked to look at GitHub just before the reload and may not have finished yet.
   let followUp = false;
@@ -314,7 +451,7 @@ async function init() {
   // The stream reconnects itself (events.js). On iOS a stream can also look open after the app resumes from
   // the background while being dead, so it is recreated whenever the page becomes visible.
   // The static version has no server, so no live-update stream either.
-  const events = LOCAL_ONLY ? { connect() {} } : createEventStream({ url: "/api/events", onSeq: syncNow });
+  const events = LOCAL_ONLY ? { connect() {} } : createEventStream({ url: "/api/events", onSeq: syncNow, onQueueSeq: () => queue.syncNow().catch(() => {}) });
   events.connect();
 
   document.addEventListener("visibilitychange", () => {

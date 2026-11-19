@@ -44,18 +44,24 @@ export function createApp(
 
   // Route labels come from a fixed set so a scanner hitting random paths cannot grow the metric series.
   function routeLabel(pathname: string): string {
-    if (pathname === "/healthz" || pathname === "/metrics" || pathname === "/api/events" || pathname === "/api/items" || pathname === "/api/version" || pathname === "/api/update-check" || pathname === "/api/update") return pathname;
+    if (pathname === "/healthz" || pathname === "/metrics" || pathname === "/api/events" || pathname === "/api/items" || pathname === "/api/queue" || pathname === "/api/version" || pathname === "/api/update-check" || pathname === "/api/update") return pathname;
     if (/^\/api\/items\/[^/]+$/.test(pathname)) return "/api/items/:id";
+    if (/^\/api\/queue\/[^/]+$/.test(pathname)) return "/api/queue/:id";
     return pathname.startsWith("/api/") ? "/api/other" : "static";
   }
 
   function metricsText(): string {
     const { live, removed } = store.counts();
+    const queue = store.queueCounts();
     const lines = [
       "# HELP interrupt_stack_items Stack items held by the server.",
       "# TYPE interrupt_stack_items gauge",
       `interrupt_stack_items{state="live"} ${live}`,
       `interrupt_stack_items{state="removed"} ${removed}`,
+      "# HELP interrupt_stack_queue_items Queue items held by the server (a separate pile from the stack).",
+      "# TYPE interrupt_stack_queue_items gauge",
+      `interrupt_stack_queue_items{state="queued"} ${queue.queued}`,
+      `interrupt_stack_queue_items{state="removed"} ${queue.removed}`,
       "# HELP interrupt_stack_seq Highest change sequence number issued.",
       "# TYPE interrupt_stack_seq gauge",
       `interrupt_stack_seq ${currentSeq()}`,
@@ -81,6 +87,18 @@ export function createApp(
   function notify() {
     if (!streams.size) return;
     const chunk = seqEvent();
+    for (const c of streams) {
+      try {
+        c.enqueue(chunk);
+      } catch {
+        streams.delete(c);
+      }
+    }
+  }
+
+  // The queue announces itself on its own event name, so a client that only listens for `seq` never hears of it.
+  function notifyQueue() {
+    const chunk = enc.encode(`event: qseq\ndata: ${store.queueSince(Number.MAX_SAFE_INTEGER).seq}\n\n`);
     for (const c of streams) {
       try {
         c.enqueue(chunk);
@@ -117,18 +135,39 @@ export function createApp(
     });
   }
 
-  async function putItem(id: string, req: Request): Promise<Response> {
+  async function readBody(req: Request): Promise<{ data: any } | { error: Response }> {
     const declared = Number(req.headers.get("content-length") ?? 0);
-    if (declared > MAX_BODY) return json({ error: "body too large" }, 413);
+    if (declared > MAX_BODY) return { error: json({ error: "body too large" }, 413) };
     const raw = await req.text();
-    if (enc.encode(raw).length > MAX_BODY) return json({ error: "body too large" }, 413);
+    if (enc.encode(raw).length > MAX_BODY) return { error: json({ error: "body too large" }, 413) };
     let data: any;
     try {
       data = JSON.parse(raw);
     } catch {
-      return json({ error: "invalid JSON" }, 400);
+      return { error: json({ error: "invalid JSON" }, 400) };
     }
-    if (data === null || typeof data !== "object") return json({ error: "expected a JSON object" }, 400);
+    if (data === null || typeof data !== "object") return { error: json({ error: "expected a JSON object" }, 400) };
+    return { data };
+  }
+
+  async function putQueue(id: string, req: Request): Promise<Response> {
+    const body = await readBody(req);
+    if ("error" in body) return body.error;
+    const { data } = body;
+    try {
+      const row = store.upsertQueue(id, { text: data.text, ts: data.ts, removed: data.removed === true, at: data.at, started: data.started });
+      notifyQueue();
+      return json(row);
+    } catch (e) {
+      if (e instanceof ValidationError) return json({ error: e.message }, 400);
+      throw e;
+    }
+  }
+
+  async function putItem(id: string, req: Request): Promise<Response> {
+    const body = await readBody(req);
+    if ("error" in body) return body.error;
+    const { data } = body;
     try {
       const item = store.upsert(id, { text: data.text, ts: data.ts, removed: data.removed === true, at: data.at });
       notify();
@@ -172,6 +211,12 @@ export function createApp(
       const n = Number(url.searchParams.get("since"));
       return json({ ...store.since(Number.isSafeInteger(n) && n > 0 ? n : 0), epoch: store.epoch });
     }
+    if (pathname === "/api/queue" && req.method === "GET") {
+      const n = Number(url.searchParams.get("since"));
+      return json({ ...store.queueSince(Number.isSafeInteger(n) && n > 0 ? n : 0), epoch: store.epoch });
+    }
+    const qm = pathname.match(/^\/api\/queue\/([^/]+)$/);
+    if (qm && req.method === "PUT") return putQueue(decodeURIComponent(qm[1]), req);
     if (pathname === "/api/version" && req.method === "GET") {
       return new Response(JSON.stringify({
           version,

@@ -159,7 +159,7 @@ describe("sync core", () => {
     a.ctl.online = false;
     const item = await a.sync.push("blink");
     await a.sync.remove(item.id);
-    expect(a.sync.status()).toEqual({ state: "offline", pending: 1 });
+    expect(a.sync.status()).toEqual({ state: "offline", pending: 1, error: { kind: "unreachable" } });
     a.ctl.online = true;
     await a.sync.syncNow();
     await b.sync.syncNow();
@@ -191,7 +191,7 @@ describe("sync core", () => {
     a.ctl.online = false;
     await a.sync.push("pending one");
     await a.sync.syncNow();
-    expect(a.sync.status()).toEqual({ state: "offline", pending: 1 });
+    expect(a.sync.status()).toEqual({ state: "offline", pending: 1, error: { kind: "unreachable" } });
     expect((await a.storage.load()).dirty).toHaveLength(1);
   });
 
@@ -326,7 +326,7 @@ describe("failing requests", () => {
     await a.sync.push("good");
     await a.sync.syncNow();
     expect(serverTexts(w)).toEqual(["good"]);
-    expect(a.sync.status()).toEqual({ state: "error", pending: 1 });
+    expect(a.sync.status()).toEqual({ state: "error", pending: 1, error: { kind: "client-error", status: 400 } });
     await b.sync.push("from B");
     await b.sync.syncNow();
     await a.sync.syncNow();
@@ -353,7 +353,7 @@ describe("failing requests", () => {
     a.ctl.intercept = (path, init) => (init?.method === "PUT" ? new Response("bad gateway", { status: 502 }) : null);
     await a.sync.push("kept");
     await a.sync.syncNow();
-    expect(a.sync.status()).toEqual({ state: "offline", pending: 1 });
+    expect(a.sync.status()).toEqual({ state: "offline", pending: 1, error: { kind: "server-error", status: 502 } });
   });
 });
 

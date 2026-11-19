@@ -6,6 +6,7 @@ const CLOSED = 2;
 export function createEventStream({
   url,
   onSeq,
+  onQueueSeq = () => {},
   make = (u) => new EventSource(u),
   schedule = (fn, ms) => setTimeout(fn, ms),
   cancel = (t) => clearTimeout(t),
@@ -21,6 +22,7 @@ export function createEventStream({
     const s = make(url);
     source = s;
     s.addEventListener("seq", onSeq);
+    s.addEventListener("qseq", onQueueSeq); // the queue's own event; a client that does not know it never hears it
     s.addEventListener("open", () => {
       attempt = 0;
     });

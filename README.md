@@ -25,6 +25,8 @@ Open the https address once online, then:
 - **iPhone / iPad (Safari):** Share, then Add to Home Screen.
 - **Windows / ChromeOS (Chrome or Edge):** use the install icon in the address bar, or the menu's Install option.
 
+The app also offers this itself: a small "Install" banner on Chromium browsers, and short Share, Add to Home Screen instructions on iPhone and iPad. It never shows when the app is already installed, and "Not now" hides it for 14 days (remembered in the browser's local storage). Firefox and desktop Safari get nothing. It makes no network calls, so the static version behaves the same.
+
 ## Deploying from git with Dockhand
 
 Settings below come from Dockhand's manual (https://dockhand.pro/manual, read 2026-11-17):
@@ -101,12 +103,25 @@ Enter the values as plain text, with nothing after them. In Dockhand's variables
 - Conflicts resolve by arrival: the last change the server receives for an item wins, not the change made last. If a device was offline when it removed an item and reconnects after another device restored it, the older removal wins. Both devices then show the same thing.
 - A change the server refuses (a 4xx response) stays on the device and shows as "Sync problem" without blocking other changes. If the device's own storage fails, it says so and keeps working from memory.
 
-API (JSON): `GET /api/items?since=<seq>`, `PUT /api/items/<id>`, `GET /api/events` (event stream), `GET /api/version`, `GET /healthz`.
+API (JSON): `GET /api/items?since=<seq>`, `PUT /api/items/<id>`, `GET /api/queue?since=<seq>`, `PUT /api/queue/<id>`, `GET /api/events` (event stream; `seq` for the stack, `qseq` for the queue), `GET /api/version`, `GET /healthz`.
 
 ## & Pop, and Done today
 
 - **& Pop** is a second segment attached to **Push**. Push is the default (Enter pushes); "& Pop" takes a deliberate tap. It pushes what you typed and takes the item that was on top off the stack, as one change: the screen never shows the empty stack in between, and offline both changes are kept and sent together. With nothing typed it does nothing (it never pops without pushing); with an empty stack it is disabled. The usual Undo appears for the item it removed.
 - **Done today** lists everything taken off the stack since local midnight on that device, newest first, greyed out, with the time. It rolls over at midnight. Popped items and items removed with **Drop** (the button on each item underneath the top one) both appear, because the app records only that an item was removed. Items removed before this version existed show under the day they were pushed.
+
+## Queue (shown as "Later")
+
+A pile of things to do later, in no particular order (not a line: nothing about it means "next"). The newest addition shows on top. On screen it is labelled **Later**; that label is one constant (`QUEUE_LABEL` in `web/queue.js`).
+
+- **A separate structure from the stack.** Its own table (`queue`), API (`/api/queue`), sync state, change numbering, IndexedDB database (`interrupt-stack-queue`) and stream event (`qseq`). `/api/items`, the `seq` stream event and the stack's IndexedDB are exactly as before and contain no queue items, so a copy of the app cached from before the queue existed simply never sees it, and keeps working.
+- **Layout.** Wide screens (700px and up) show two columns, Stack on the left and Later on the right. On a phone they are side-by-side panes: swipe sideways, or tap the "Later 3 ›" tab (Stack side) and "‹ Stack" tab (Later side). Done today stays under the stack. Both panes are reachable by keyboard (focusing a control in the other pane scrolls it into view).
+- **Its own input.** The Later pane has its own text box and **Add** button (Enter adds). The **Push / & Pop** control is unchanged.
+- **Start and Drop.** Each row has **Start**, which puts it on top of the stack, and **Drop**, which removes it (with the usual Undo, which puts it back in the queue). Start has no Undo.
+- **Start is two writes in two structures, made safe to repeat.** (1) Push onto the stack under a derived id: the queue id `q-<x>` becomes the stack id `s-<x>`, and if that id already exists (even popped since) nothing is pushed again. (2) Tombstone the queue row, marked `started`. Step 1 is saved on the device before step 2 begins, and whenever the app next runs, any live queue row whose stack twin exists is tombstoned. So a crash or flaky network between the two cannot duplicate the task, and two devices starting the same row converge on one stack item. Dropped rows never touch the stack, so they never appear in Done today; started-then-popped ones appear as normal stack items.
+- **Events.** The same `events` table records `queue` (added), `dequeue` (dropped), `requeue` (drop undone) and `start` (started) for the `q-` id, in the same transaction as the change. A start also logs the stack item's `push` (id `s-<x>`), so the two join on the id suffix. No analysis yet.
+- **Metrics.** `interrupt_stack_items{state="live"}` still counts the stack only. The queue has `interrupt_stack_queue_items{state="queued"|"removed"}`.
+- **Static version.** Works the same, entirely in the browser, with no network calls.
 
 ## Updating the app on your devices
 
@@ -119,7 +134,7 @@ The version covers only the web files, so a server-only change does not raise th
 
 ## The event log
 
-The server records every push, pop and restore in an append-only `events` table in the same SQLite database (`/data/stack.db`), written in the same transaction as the change to the item. Columns: `n`, `ts` (when the server recorded it), `at` (when it happened, by the device's clock; both in ms since the epoch), `op`, `id`, `text`. Nothing reads it back yet.
+The server records every push, pop and restore (and the queue operations, see Queue) in an append-only `events` table in the same SQLite database (`/data/stack.db`), written in the same transaction as the change to the item. Columns: `n`, `ts` (when the server recorded it), `at` (when it happened, by the device's clock; both in ms since the epoch), `op`, `id`, `text`. Nothing reads it back yet.
 
 - Resending an item the server already has in the same state adds nothing.
 - A device only sends an item's latest state, so a push, pop and restore done offline between syncs shows up as the net change.

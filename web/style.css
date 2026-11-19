@@ -1,4 +1,5 @@
-/* Layout: one narrow column. Push box on top, the current task as a large card, the rest of the stack underneath, deepest last. */
+/* Layout: the stack and the queue are two panes side by side (two columns when wide, swipeable panes on a phone).
+   Within the stack pane:  Push box on top, the current task as a large card, the rest of the stack underneath, deepest last. */
 :root{
   --bg:#f3f4f1;
   --surface:#ffffff;
@@ -46,7 +47,7 @@ body{
   line-height:1.45;
 }
 main{
-  max-width:640px;margin:0 auto;
+  max-width:1040px;margin:0 auto;
   padding-top:max(20px,env(safe-area-inset-top,0px));
   padding-bottom:max(64px,env(safe-area-inset-bottom,0px));
   padding-left:max(16px,env(safe-area-inset-left,0px));
@@ -124,3 +125,39 @@ button.icon:hover:not(:disabled){border-color:var(--line)}
 .done .item-text{color:var(--muted)}
 .server-update{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
 .server-update button{min-height:36px;padding:4px 12px;font-size:.8125rem}
+.install-actions{display:flex;gap:8px;flex-wrap:wrap}
+.install button{min-height:36px;padding:4px 12px;font-size:.8125rem}
+
+button.link{min-height:0;padding:0 2px;border:0;background:transparent;color:var(--accent);font:inherit;font-size:inherit;text-decoration:underline;cursor:pointer}
+dialog{
+  width:calc(100% - 32px);max-width:640px;max-height:calc(100% - 32px);padding:14px;margin:auto;
+  background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:10px;
+}
+dialog[open]{display:flex;flex-direction:column;gap:10px}
+dialog::backdrop{background:rgba(0,0,0,.5)}
+.debug-head{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.debug-head h2{margin:0;font-size:1rem;font-weight:600}
+.debug-actions{display:flex;gap:8px}
+.debug-actions button{min-height:36px;padding:4px 12px;font-size:.8125rem}
+#debug-text{
+  margin:0;overflow:auto;min-height:0;flex:1;
+  font-family:var(--font-mono);font-size:.75rem;line-height:1.4;white-space:pre-wrap;overflow-wrap:anywhere;
+  background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;
+}
+
+/* Stack and queue: separate structures, side by side. Narrow: horizontal panes you swipe (or tap the edge tab) between. */
+.board{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;overscroll-behavior-x:contain;scrollbar-width:none;gap:24px;margin:0 -16px;padding:0 16px;scroll-padding:0 16px}
+.board::-webkit-scrollbar{display:none}
+.pane{flex:0 0 100%;scroll-snap-align:start;scroll-snap-stop:always;min-width:0;display:flex;flex-direction:column;gap:20px;align-self:flex-start}
+.pane-nav{display:flex}
+#pane-stack .pane-nav{justify-content:flex-end}
+.pane-tab{min-height:36px;padding:4px 12px;font-size:.8125rem;border-color:var(--accent);color:var(--accent)}
+#queue-form input{flex:1 1 10rem}
+button.add{border-color:var(--accent);color:var(--accent)}
+.queue-empty{margin:0}
+#queue .item-text{flex:1}
+@media (min-width:700px){
+  .board{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);overflow:visible;margin:0;padding:0;gap:24px;scroll-snap-type:none}
+  .pane{align-self:start}
+  .pane-nav{display:none}
+}

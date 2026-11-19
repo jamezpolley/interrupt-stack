@@ -1,6 +1,6 @@
 // App-shell service worker. Never touches /api/ or non-GET requests: sync is the app's job (sync.js).
 // Bump CACHE when the list of shell files changes; old caches are deleted on activate.
-const CACHE = "interrupt-stack-v5";
+const CACHE = "interrupt-stack-v8";
 // Everything is relative to where this file is served from, so the app works under any path or host.
 const BASE = new URL("./", self.location).href;
 const BASE_PATH = new URL(BASE).pathname;
@@ -8,10 +8,14 @@ const SHELL = [
   "",
   "app.js",
   "sync.js",
+  "queue.js",
   "idb.js",
   "events.js",
   "refresh.js",
   "today.js",
+  "install.js",
+  "status-text.js",
+  "debug-text.js",
   "config.js",
   "version.js",
   "style.css",
