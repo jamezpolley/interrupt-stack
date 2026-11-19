@@ -380,3 +380,90 @@ describe("queue store", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 });
+
+describe("origin (push again)", () => {
+  const withOrigin = (origin: string | null | undefined, text = "task", ts = 1000, removed = false) => ({ text, ts, removed, origin });
+
+  test("a new row can carry the id of the item it was pushed again from", () => {
+    const s = mem();
+    s.upsert("s-aaaa", input("write plan", 5, true));
+    const again = s.upsert("s-bbbb", withOrigin("s-aaaa", "write plan", 9));
+    expect(again).toEqual({ id: "s-bbbb", text: "write plan", ts: 9, at: 9, removed: false, seq: 2, origin: "s-aaaa" });
+    expect(s.since(0).items.find((i) => i.id === "s-bbbb")?.origin).toBe("s-aaaa");
+  });
+
+  test("a row with no origin has no origin key at all", () => {
+    expect("origin" in mem().upsert("s-aaaa", input())).toBe(false);
+  });
+
+  test("null origin is the same as none", () => {
+    expect("origin" in mem().upsert("s-aaaa", withOrigin(null))).toBe(false);
+  });
+
+  test("an absent origin on a later write leaves the stored origin alone (an old client popping the clone)", () => {
+    const s = mem();
+    s.upsert("s-bbbb", withOrigin("s-aaaa"));
+    const popped = s.upsert("s-bbbb", input("task", 1000, true)); // no origin field at all
+    expect(popped.origin).toBe("s-aaaa");
+    expect(s.since(0).items[0].origin).toBe("s-aaaa");
+    expect(s.upsert("s-bbbb", withOrigin(null, "task", 1000, false)).origin).toBe("s-aaaa");
+  });
+
+  test("a different origin on an existing row is ignored: it is set once", () => {
+    const s = mem();
+    s.upsert("s-bbbb", withOrigin("s-aaaa"));
+    expect(s.upsert("s-bbbb", withOrigin("s-cccc")).origin).toBe("s-aaaa");
+  });
+
+  test("a chain points at the direct parent", () => {
+    const s = mem();
+    s.upsert("s-aaaa", input());
+    s.upsert("s-bbbb", withOrigin("s-aaaa"));
+    expect(s.upsert("s-cccc", withOrigin("s-bbbb")).origin).toBe("s-bbbb");
+  });
+
+  test("an origin that is not an item id, or is the row itself, is refused", () => {
+    const s = mem();
+    for (const bad of ["", "x".repeat(300), "q-aaaa", 5, {}, "s-bbbb"] as any[]) {
+      expect(() => s.upsert("s-bbbb", withOrigin(bad))).toThrow(ValidationError);
+    }
+  });
+
+  test("an origin that names no row here is still accepted (the original may not have synced yet)", () => {
+    expect(mem().upsert("s-bbbb", withOrigin("s-zzzz")).origin).toBe("s-zzzz");
+  });
+
+  test("seq and the event log behave exactly as without an origin", () => {
+    const s = mem();
+    s.upsert("s-bbbb", withOrigin("s-aaaa"));
+    s.upsert("s-bbbb", input("task", 1000, true));
+    expect(s.since(0).seq).toBe(2);
+    expect(s.log().map((e) => [e.op, e.id, Object.keys(e).sort().join()])).toEqual([
+      ["push", "s-bbbb", "at,id,n,op,text,ts"],
+      ["pop", "s-bbbb", "at,id,n,op,text,ts"],
+    ]);
+  });
+
+  test("a database from before origin existed gains the column, keeps its rows, and can take an origin", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ist-old-"));
+    try {
+      const path = join(dir, "stack.db");
+      const old = new Database(path, { create: true });
+      old.run("CREATE TABLE items (id TEXT PRIMARY KEY, text TEXT NOT NULL, ts INTEGER NOT NULL, at INTEGER, removed INTEGER NOT NULL, seq INTEGER NOT NULL)");
+      old.run("INSERT INTO items VALUES ('s-aaaa', 'from before', 700, 800, 1, 1)");
+      old.close();
+      const s = openStore(path);
+      expect(s.since(0).items).toEqual([{ id: "s-aaaa", text: "from before", ts: 700, at: 800, removed: true, seq: 1 }]);
+      s.upsert("s-bbbb", withOrigin("s-aaaa", "from before", 900));
+      s.close();
+      const again = openStore(path); // a second open must not try to add the column twice
+      expect(again.since(0).items.map((i) => [i.id, i.origin])).toEqual([["s-aaaa", undefined], ["s-bbbb", "s-aaaa"]]);
+      again.close();
+      const raw = new Database(path);
+      expect((raw.prepare("SELECT origin FROM items WHERE id = 's-bbbb'").get() as any).origin).toBe("s-aaaa");
+      raw.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

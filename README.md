@@ -95,7 +95,7 @@ Enter the values as plain text, with nothing after them. In Dockhand's variables
 
 ## How it works
 
-- Each stack item is its own record (`id`, `text`, `ts`, `at`, `removed`, `seq`), so two devices pushing at once never overwrite each other. Removing an item sets a flag, so the removal reaches your other devices; undo clears it.
+- Each stack item is its own record (`id`, `text`, `ts`, `at`, `removed`, `seq`, and an optional `origin`), so two devices pushing at once never overwrite each other. Removing an item sets a flag, so the removal reaches your other devices; undo clears it.
 - The browser keeps a local copy in IndexedDB and a list of unsent changes. Every action applies locally first, then syncs. The server announces new changes over a server-sent event stream so open devices update live.
 - If the server's database is ever replaced, clients notice (each database has an epoch ID, and sequence numbers going backwards also counts) and re-send everything they hold.
 - The live-update stream reconnects with a backoff if a proxy answers a reconnect with an error, such as a 502 during a restart.
@@ -108,7 +108,7 @@ API (JSON): `GET /api/items?since=<seq>`, `PUT /api/items/<id>`, `GET /api/queue
 ## & Pop, and Done today
 
 - **& Pop** is a second segment attached to **Push**. Push is the default (Enter pushes); "& Pop" takes a deliberate tap. It pushes what you typed and takes the item that was on top off the stack, as one change: the screen never shows the empty stack in between, and offline both changes are kept and sent together. With nothing typed it does nothing (it never pops without pushing); with an empty stack it is disabled. The usual Undo appears for the item it removed.
-- **Done today** lists everything taken off the stack since local midnight on that device, newest first, greyed out, with the time. It rolls over at midnight. Popped items and items removed with **Drop** (the button on each item underneath the top one) both appear, because the app records only that an item was removed. Items removed before this version existed show under the day they were pushed.
+- **Done today** lists everything taken off the stack since local midnight on that device, newest first, greyed out, with the time. It rolls over at midnight. Popped items and items removed with **Drop** (the button on each item underneath the top one) both appear, because the app records only that an item was removed. Items removed before this version existed show under the day they were pushed. Tapping a finished row opens its details, which has a **Push again** button: it pushes a new item with the same text (the finished one stays in Done today) and records the finished item's id as the new one's `origin`. `origin` is set once, when the item is created; a write that leaves it out never clears it, so older cached copies of the app are safe.
 
 ## Queue (shown as "Later")
 

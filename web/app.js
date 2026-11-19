@@ -6,6 +6,7 @@ import { createEventStream } from "./events.js";
 import { canUpdateNow, describeServerUpdate, forceRefresh, readVersionInfo, requestServerCheck, updateServerNow } from "./refresh.js";
 import { completedToday } from "./today.js";
 import { detailsFor, doneRow, formatStart } from "./times.js";
+import { pushAgain } from "./again.js";
 import { formatFailure } from "./debug-text.js";
 import { offersSignIn, shortStatus, statusLabel, statusMessage, unsentWords } from "./status-text.js";
 import { LOCAL_ONLY } from "./config.js";
@@ -477,6 +478,13 @@ async function init() {
   });
   $("debug-close").addEventListener("click", () => $("debug-dialog").close());
   $("details-close").addEventListener("click", () => $("details-dialog").close());
+  // Push again: a new stack item with the same text (linked to this one), then the panel closes on the new top item.
+  $("details-again").addEventListener("click", async () => {
+    const id = detailsFor_id;
+    if (!id) return;
+    const pushed = await pushAgain(sync, id);
+    if (pushed) $("details-dialog").close();
+  });
   // A click on the backdrop lands on the dialog element itself (its content sits in an inner box that fills it).
   $("details-dialog").addEventListener("click", (ev) => {
     if (ev.target === $("details-dialog")) $("details-dialog").close();
