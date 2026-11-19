@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { codeVersion } from "./gitver";
+import { codeVersion, reportedBase } from "./gitver";
 import { cleanupFixtures, fixture, sh, tmp } from "./gitfixture";
 
 afterEach(cleanupFixtures);
@@ -58,5 +58,25 @@ describe("codeVersion", () => {
     mkdirSync(join(dir, ".git"));
     writeFileSync(join(dir, ".git", "HEAD"), "garbage\n");
     expect(codeVersion(dir)).toEqual({ commit: null, label: null });
+  });
+});
+
+describe("reportedBase", () => {
+  const A = "a".repeat(40);
+  const B = "b".repeat(40);
+  test("reported only when both are known and they differ", () => {
+    expect(reportedBase(A, B)).toBe(B);
+    expect(reportedBase(A, A)).toBeNull();
+    expect(reportedBase(A, null)).toBeNull();
+    expect(reportedBase(null, B)).toBeNull(); // the running commit is unknown: never guess
+    expect(reportedBase(undefined, undefined)).toBeNull();
+  });
+  test("anything that is not a commit id is not a base", () => {
+    expect(reportedBase(A, "not-a-commit")).toBeNull();
+    expect(reportedBase(A, "")).toBeNull();
+  });
+  test("case does not make a commit differ from itself", () => {
+    expect(reportedBase(A, A.toUpperCase())).toBeNull();
+    expect(reportedBase(B.toUpperCase(), A)).toBe(A);
   });
 });

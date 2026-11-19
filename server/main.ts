@@ -17,7 +17,7 @@ const ref = process.env.INTERRUPT_STACK_REF || "main";
 const updateChecker = process.env.INTERRUPT_STACK_UPDATE === "off" ? undefined : createUpdateChecker({ codeDir, ref, current: version.commit });
 
 const store = openStore(join(dataDir, "stack.db"));
-const app = createApp(store, { webDir: resolve(import.meta.dir, "../web"), commit: version.commit, label: version.label, updateChecker, onRestart: process.env.INTERRUPT_STACK_SUPERVISED === "1" ? () => shutdown() : undefined });
+const app = createApp(store, { webDir: resolve(import.meta.dir, "../web"), commit: version.commit, label: version.label, baseCommit: process.env.INTERRUPT_STACK_BASE_COMMIT, updateChecker, onRestart: process.env.INTERRUPT_STACK_SUPERVISED === "1" ? () => shutdown() : undefined });
 
 // idleTimeout 0: the event stream is long-lived and must not be cut by the default idle timer.
 const server = Bun.serve({ port, idleTimeout: 0, fetch: app.fetch });

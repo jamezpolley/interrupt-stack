@@ -26,3 +26,13 @@ export function codeVersion(dir: string): CodeVersion {
   } catch {} // no git binary: the short commit will do
   return { commit, label };
 }
+
+/**
+ * The commit the container image was built from ("base"), but only when it is worth showing: both commits are known and
+ * they differ, which means the server has updated itself past its image. Otherwise null (never guess).
+ */
+export function reportedBase(running: unknown, base: unknown): string | null {
+  const r = normalizeCommit(running);
+  const b = normalizeCommit(base);
+  return r && b && r !== b ? b : null;
+}

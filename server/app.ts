@@ -1,6 +1,7 @@
 import { resolve, sep, extname } from "node:path";
 import { ValidationError, type Store } from "./store";
 import { webVersion } from "./webversion";
+import { reportedBase } from "./gitver";
 import type { UpdateState } from "./updatecheck";
 
 const MAX_BODY = 4096;
@@ -28,6 +29,8 @@ export function createApp(
   opts: {
     webDir: string;
     commit?: string | null;
+    /** The commit the container image was built from; reported as `base` only when it differs from `commit`. */
+    baseCommit?: string | null;
     label?: string | null;
     updateChecker?: UpdateChecker;
     /** Present only when something will start the server again after it exits (the container's entrypoint). */
@@ -36,6 +39,7 @@ export function createApp(
 ) {
   const root = resolve(opts.webDir);
   const version = webVersion(root);
+  const base = reportedBase(opts.commit, opts.baseCommit);
   const streams = new Set<ReadableStreamDefaultController<Uint8Array>>();
   const startedAt = Math.floor(Date.now() / 1000);
   const startedAtMs = Date.now();
@@ -228,6 +232,7 @@ export function createApp(
           version,
           commit: opts.commit ?? null,
           label: opts.label ?? null,
+          ...(base ? { base } : {}),
           startedAt: startedAtMs,
           update: {
             ...(opts.updateChecker?.state() ?? { enabled: false, ref: null, checkedAt: null, available: null }),

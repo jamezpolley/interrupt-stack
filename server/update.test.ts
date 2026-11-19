@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { prepareLiveCopy, readQuarantine, supervise } from "./update";
 import { cleanupFixtures, fixture, sh } from "./gitfixture";
@@ -212,6 +212,72 @@ describe("supervise", () => {
       expect(s).toMatchObject({ updated: false, dir: f.baked });
       expect(await body()).toBe("ok v1");
       expect(existsSync(f.live)).toBe(false);
+    } finally {
+      s.child.kill();
+    }
+  });
+
+  test("the server is told which commit the image was built from, whether it runs updated code or not", async () => {
+    // updated: the image commit is the baked one, the running code is newer
+    const up = fixture();
+    up.commit("v2");
+    const a = await run(up);
+    try {
+      await a.body();
+      expect(a.s.updated).toBe(true);
+      expect(await (await fetch(`http://127.0.0.1:${nextPort - 1}/base`)).text()).toBe(up.bakedCommit);
+    } finally {
+      a.s.child.kill();
+    }
+    // updating switched off: running the baked code, base is the same commit
+    const off = fixture();
+    off.commit("v2");
+    const b = await run(off, { update: false });
+    try {
+      await b.body();
+      expect(await (await fetch(`http://127.0.0.1:${nextPort - 1}/base`)).text()).toBe(off.bakedCommit);
+    } finally {
+      b.s.child.kill();
+    }
+    // fell back after a failed update: running the baked code again
+    const bad = fixture();
+    bad.commit("crash-now");
+    const c = await run(bad);
+    try {
+      expect(c.s.fellBack).toBe(true);
+      await c.body();
+      expect(await (await fetch(`http://127.0.0.1:${nextPort - 1}/base`)).text()).toBe(bad.bakedCommit);
+    } finally {
+      c.s.child.kill();
+    }
+  });
+
+  test("an image whose own commit is unknown passes nothing, and a stale value in the environment is not inherited", async () => {
+    const f = fixture();
+    f.commit("v2");
+    rmSync(join(f.baked, ".git"), { recursive: true, force: true }); // no .git and no build-info.json: unknown
+    process.env.INTERRUPT_STACK_BASE_COMMIT = "f".repeat(40);
+    try {
+      const { s, body } = await run(f);
+      try {
+        await body();
+        expect(await (await fetch(`http://127.0.0.1:${nextPort - 1}/base`)).text()).toBe("undefined");
+      } finally {
+        s.child.kill();
+      }
+    } finally {
+      delete process.env.INTERRUPT_STACK_BASE_COMMIT;
+    }
+  });
+
+  test("an image with only a build-info.json still reports its commit", async () => {
+    const f = fixture();
+    rmSync(join(f.baked, ".git"), { recursive: true, force: true });
+    writeFileSync(join(f.baked, "build-info.json"), JSON.stringify({ commit: "c".repeat(40) }));
+    const { s, body } = await run(f, { update: false });
+    try {
+      await body();
+      expect(await (await fetch(`http://127.0.0.1:${nextPort - 1}/base`)).text()).toBe("c".repeat(40));
     } finally {
       s.child.kill();
     }
