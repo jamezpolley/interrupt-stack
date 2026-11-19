@@ -60,7 +60,7 @@ function render() {
   if (!stack.length) {
     const e = document.createElement("div");
     e.className = "empty";
-    e.textContent = "The stack is empty. Nothing is waiting for you.";
+    e.textContent = "Empty.";
     wrap.appendChild(e);
   } else {
     const top = stack[0];
