@@ -87,6 +87,33 @@ describe("api", () => {
   });
 });
 
+describe("origin over the API", () => {
+  test("PUT with an origin stores it and GET returns it", async () => {
+    await put("s-aaaa", { ...item("hello", 7, true) });
+    const res = await put("s-bbbb", { ...item("hello", 9), origin: "s-aaaa" });
+    expect((await res.json()).origin).toBe("s-aaaa");
+    const list = await (await get("/api/items?since=0")).json();
+    expect(list.items.map((i: any) => [i.id, i.origin])).toEqual([["s-aaaa", undefined], ["s-bbbb", "s-aaaa"]]);
+  });
+
+  test("an old-style PUT without the field (popping the clone) keeps the stored origin", async () => {
+    await put("s-bbbb", { ...item("hello", 9), origin: "s-aaaa" });
+    const res = await put("s-bbbb", { text: "hello", ts: 9, removed: true, at: 20 });
+    expect((await res.json()).origin).toBe("s-aaaa");
+    expect((await (await get("/api/items?since=0")).json()).items[0].origin).toBe("s-aaaa");
+  });
+
+  test("PUT with a different origin later does not change it", async () => {
+    await put("s-bbbb", { ...item("hello", 9), origin: "s-aaaa" });
+    expect((await (await put("s-bbbb", { ...item("hello", 9), origin: "s-cccc" })).json()).origin).toBe("s-aaaa");
+  });
+
+  test("a bad origin is a 400", async () => {
+    expect((await put("s-bbbb", { ...item(), origin: 5 })).status).toBe(400);
+    expect((await put("s-bbbb", { ...item(), origin: "x".repeat(500) })).status).toBe(400);
+  });
+});
+
 describe("static and health", () => {
   test("GET /healthz returns 200 ok", async () => {
     const res = await get("/healthz");

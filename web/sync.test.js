@@ -584,3 +584,73 @@ describe("local-only mode", () => {
     expect((await storage.load()).dirty).toEqual([]);
   });
 });
+
+
+describe("push again (origin)", () => {
+  test("push with an origin keeps it on the item, in storage, and sends it", async () => {
+    const w = world();
+    const a = w.mkClient();
+    await a.sync.start();
+    const first = await a.sync.push("write report");
+    await a.sync.remove(first.id);
+    const again = await a.sync.push("write report", { origin: first.id });
+    expect(again.origin).toBe(first.id);
+    expect(again.id).not.toBe(first.id);
+    expect((await a.storage.load()).items.find((i) => i.id === again.id).origin).toBe(first.id);
+    await a.sync.syncNow();
+    expect(w.server.current.store.since(0).items.find((r) => r.id === again.id).origin).toBe(first.id);
+    expect(a.sync.stack().map((i) => i.id)).toEqual([again.id]);
+  });
+
+  test("a push without an origin sends none and the item has none", async () => {
+    const w = world();
+    const a = w.mkClient();
+    await a.sync.start();
+    const it = await a.sync.push("plain");
+    await a.sync.syncNow();
+    expect("origin" in it).toBe(false);
+    expect("origin" in w.server.current.store.since(0).items[0]).toBe(false);
+  });
+
+  test("the origin survives popping the clone and a round trip to another device", async () => {
+    const w = world();
+    const a = w.mkClient();
+    const b = w.mkClient();
+    await a.sync.start();
+    await b.sync.start();
+    const first = await a.sync.push("x");
+    await a.sync.remove(first.id);
+    const again = await a.sync.push("x", { origin: first.id });
+    await a.sync.syncNow();
+    await a.sync.remove(again.id);
+    await a.sync.syncNow();
+    await b.sync.syncNow();
+    expect(b.sync.allItems().find((i) => i.id === again.id)).toMatchObject({ removed: true, origin: first.id });
+    expect(a.sync.allItems().find((i) => i.id === again.id).origin).toBe(first.id);
+  });
+
+  test("works offline: kept locally, then sent when the connection returns", async () => {
+    const w = world();
+    const a = w.mkClient();
+    await a.sync.start();
+    const first = await a.sync.push("x");
+    await a.sync.syncNow();
+    await a.sync.remove(first.id);
+    a.ctl.online = false;
+    const again = await a.sync.push("x", { origin: first.id });
+    a.ctl.online = true;
+    await a.sync.syncNow();
+    expect(w.server.current.store.since(0).items.find((r) => r.id === again.id).origin).toBe(first.id);
+  });
+
+  test("local-only mode keeps it without any network use", async () => {
+    let calls = 0;
+    const sync = createSync({ storage: memStorage(), fetch: async () => void calls++, local: true });
+    await sync.start();
+    const first = await sync.push("x");
+    await sync.remove(first.id);
+    const again = await sync.push("x", { origin: first.id });
+    expect(again.origin).toBe(first.id);
+    expect(calls).toBe(0);
+  });
+});

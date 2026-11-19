@@ -112,8 +112,8 @@ export function createSync({ storage, fetch, now = () => Date.now(), online = ()
   }
   const setItem = (item) => setItems([item]);
 
-  const newItem = (text, ts, id = `s-${ts.toString(36)}${Math.random().toString(36).slice(2, 6).padEnd(4, "0")}`) => {
-    return { id, text, ts, at: ts, removed: false, seq: 0 };
+  const newItem = (text, ts, id = `s-${ts.toString(36)}${Math.random().toString(36).slice(2, 6).padEnd(4, "0")}`, origin = null) => {
+    return { id, text, ts, at: ts, removed: false, seq: 0, ...(origin ? { origin } : {}) };
   };
 
   const currentStack = () =>
@@ -132,7 +132,7 @@ export function createSync({ storage, fetch, now = () => Date.now(), online = ()
           ...init,
           method: "PUT",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ text: sent.text, ts: sent.ts, removed: sent.removed, at: sent.at }),
+          body: JSON.stringify({ text: sent.text, ts: sent.ts, removed: sent.removed, at: sent.at, ...(sent.origin ? { origin: sent.origin } : {}) }),
         });
         if (!wantsSignIn(res) && permanentlyRejected(res.status)) {
           if (!rejected.size) lastFailure = { at: now(), request: req, online: online(), response: await describeResponse(res) };
@@ -246,12 +246,13 @@ export function createSync({ storage, fetch, now = () => Date.now(), online = ()
     /**
      * Push a task. `opts.id` pins the id (the queue uses it so that starting a queued task twice is the same push):
      * if that id is already here, removed or not, nothing changes and the existing item is returned.
+     * `opts.origin` is the id of the finished item this is a fresh copy of ("push again"); it is stored once and kept.
      */
     async push(text, opts = {}) {
       const trimmed = String(text ?? "").trim();
       if (!trimmed) return null;
       if (opts.id && items.has(opts.id)) return items.get(opts.id);
-      const item = newItem(trimmed, now(), opts.id);
+      const item = newItem(trimmed, now(), opts.id, typeof opts.origin === "string" ? opts.origin : null);
       await setItem(item);
       return item;
     },

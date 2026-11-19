@@ -177,6 +177,8 @@ dialog.details[open]{display:block}
 .details-box{padding:14px;display:flex;flex-direction:column;gap:10px;max-height:calc(100dvh - 32px - 2px)}
 .details-summary{margin:0;font-size:.875rem;color:var(--muted)}
 .details-scroll{overflow:auto;min-height:0}
+.details-foot{display:flex}
+.details-foot button{flex:1 1 auto}
 .details h2{overflow-wrap:anywhere;min-width:0}
 table.timeline{border-collapse:collapse;width:100%;font-size:.8125rem}
 .timeline th{font-family:var(--font-mono);font-size:.6875rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:400;text-align:left;padding:0 6px 6px;position:sticky;top:0;background:var(--surface)}
