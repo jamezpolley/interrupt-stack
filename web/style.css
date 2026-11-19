@@ -129,9 +129,13 @@ button.icon{min-height:0;width:28px;height:28px;padding:0;display:inline-grid;pl
 button.icon:hover:not(:disabled){border-color:var(--line)}
 .quiet-note{color:var(--muted)}
 .done{display:flex;flex-direction:column;gap:8px}
-.done li{background:transparent;border-style:dashed;color:var(--muted)}
-/* Done today: text, then the time it ended and how long it was on top; the column labels use the same grid. */
-.done li,.done-cols{display:grid;grid-template-columns:minmax(0,1fr) 4rem 5rem;column-gap:12px}
+.done li{background:transparent;border-style:dashed;color:var(--muted);display:block;padding:0}
+/* Done today: text, then the time it ended and how long it was on top; the column labels use the same grid.
+   A row with an end time is a button (opens its details); one without is a plain div with the same look. */
+.done .done-body{padding:10px 12px;align-items:center}
+button.done-body{width:100%;min-height:44px;border:0;border-radius:7px;background:transparent;font:inherit;color:inherit;text-align:left;cursor:pointer}
+button.done-body:hover,button.done-body:active{background:var(--surface)}
+.done .done-body,.done-cols{display:grid;grid-template-columns:minmax(0,1fr) 4rem 5rem;column-gap:12px}
 .done li .item-age,.done-cols span{text-align:right}
 .done-cols{padding:0 13px;margin-bottom:-2px;font-size:.6875rem}
 .done-cols::before{content:""}
@@ -140,7 +144,7 @@ button.icon:hover:not(:disabled){border-color:var(--line)}
 .done{container-type:inline-size}
 .done .col-start{display:none}
 @container (min-width:520px){
-  .done li,.done-cols{grid-template-columns:minmax(0,1fr) 6.5rem 4rem 5rem}
+  .done .done-body,.done-cols{grid-template-columns:minmax(0,1fr) 6.5rem 4rem 5rem}
   .done .col-start{display:block}
 }
 .done .item-text{color:var(--muted)}
@@ -167,6 +171,20 @@ dialog::backdrop{background:rgba(0,0,0,.5)}
 .debug-head h2{margin:0;font-size:1rem;font-weight:600}
 .debug-actions{display:flex;gap:8px}
 .debug-actions button{min-height:36px;padding:4px 12px;font-size:.8125rem}
+/* Details panel: its content sits in an inner box so a click on the dialog element itself can only be the backdrop. */
+dialog.details{padding:0}
+dialog.details[open]{display:block}
+.details-box{padding:14px;display:flex;flex-direction:column;gap:10px;max-height:calc(100dvh - 32px - 2px)}
+.details-summary{margin:0;font-size:.875rem;color:var(--muted)}
+.details-scroll{overflow:auto;min-height:0}
+.details h2{overflow-wrap:anywhere;min-width:0}
+table.timeline{border-collapse:collapse;width:100%;font-size:.8125rem}
+.timeline th{font-family:var(--font-mono);font-size:.6875rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:400;text-align:left;padding:0 6px 6px;position:sticky;top:0;background:var(--surface)}
+.timeline td{padding:6px;border-top:1px solid var(--line);vertical-align:top}
+.timeline .n{text-align:right;font-family:var(--font-mono);font-size:.75rem;white-space:nowrap}
+.timeline th.n{text-align:right}
+.timeline .t{font-family:var(--font-mono);font-size:.75rem;white-space:nowrap}
+.timeline .w{overflow-wrap:anywhere}
 #debug-text{
   margin:0;overflow:auto;min-height:0;flex:1;
   font-family:var(--font-mono);font-size:.75rem;line-height:1.4;white-space:pre-wrap;overflow-wrap:anywhere;

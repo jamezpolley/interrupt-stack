@@ -4,33 +4,78 @@ const MIN = 60000;
 const ok = (n) => typeof n === "number" && Number.isFinite(n);
 
 /**
- * How long a removed item was the one being worked on: its span [ts, at] minus the time anything was above it.
- * Anything pushed while it was live (strictly after it, before it ended) sat above it from its own push until it ended,
- * was removed, or the item itself ended, whichever came first. Overlapping intervals are counted once.
- * An item above that is removed but has no end time is assumed to have lasted until the lower item ended.
- * Returns milliseconds, or null when there is no real answer (no end time, junk values, ended before it began).
+ * The one derivation behind both the Done today duration and the details timeline.
+ *
+ * At any moment the item on top is the live item with the greatest push time. For a removed item X, anything pushed
+ * while X was live (strictly after X, strictly before X ended) sat above X from its own push until it ended, was
+ * removed, or X itself ended, whichever came first. Those spans are merged (overlaps and touching spans count once)
+ * into "covers"; X was on top for everything in [ts, at] outside the covers.
+ * An item above that is removed but has no end time is assumed to have lasted until X ended.
+ * Returns null when there is no real answer (not removed, no end time, junk values, ended before it began).
  */
-export function timeOnTop(x, items) {
+function derive(x, items) {
   if (!x || !x.removed || !ok(x.ts) || !ok(x.at) || x.at < x.ts) return null;
-  const spans = [];
+  const above = [];
   for (const y of items) {
     if (y === x || y.id === x.id || !ok(y.ts) || !(y.ts > x.ts && y.ts < x.at)) continue;
-    const end = y.removed && ok(y.at) ? Math.min(y.at, x.at) : x.at;
-    if (end > y.ts) spans.push([y.ts, end]);
+    const rawEnd = y.removed && ok(y.at) ? y.at : Infinity;
+    const end = Math.min(rawEnd, x.at);
+    if (end > y.ts) above.push({ y, start: y.ts, end, rawEnd });
   }
-  spans.sort((a, b) => a[0] - b[0]);
-  let covered = 0;
-  let curStart = null;
-  let curEnd = null;
-  for (const [s, e] of spans) {
-    if (curEnd === null || s > curEnd) {
-      if (curEnd !== null) covered += curEnd - curStart;
-      curStart = s;
-      curEnd = e;
-    } else if (e > curEnd) curEnd = e;
+  above.sort((p, q) => p.start - q.start || (p.y.id < q.y.id ? -1 : 1));
+  const covers = [];
+  for (const a of above) {
+    const last = covers.at(-1);
+    if (last && a.start <= last.end) {
+      last.members.push(a);
+      if (a.end > last.end) last.end = a.end;
+    } else covers.push({ start: a.start, end: a.end, members: [a] });
   }
-  if (curEnd !== null) covered += curEnd - curStart;
-  return Math.max(0, x.at - x.ts - covered);
+  return { covers };
+}
+
+const coveredLength = (covers) => covers.reduce((n, c) => n + (c.end - c.start), 0);
+
+/**
+ * How long a removed item was the one being worked on, in milliseconds, or null when there is no real answer.
+ */
+export function timeOnTop(x, items) {
+  const d = derive(x, items);
+  return d ? Math.max(0, x.at - x.ts - coveredLength(d.covers)) : null;
+}
+
+/**
+ * Every push and pop that mattered to a removed item, as rows with running totals:
+ *   pushed (when it was pushed), paused (something was pushed above it), back (everything above it had ended; names
+ *   the item whose end returned it to the top), then popped (it was on top when it ended) or dropped (it ended from
+ *   underneath something still on top). `who` is the other item's text, `whoId` its id. onTop and wall are the running
+ *   totals in ms at that moment. Returns null where timeOnTop does, and its final onTop equals timeOnTop.
+ */
+export function timeline(x, items) {
+  const d = derive(x, items);
+  if (!d) return null;
+  const total = (t) => {
+    let covered = 0;
+    for (const c of d.covers) covered += Math.max(0, Math.min(c.end, t) - Math.min(c.start, t));
+    return Math.max(0, t - x.ts - covered);
+  };
+  const row = (t, kind, other) => ({ t, kind, ...(other ? { who: other.text, whoId: other.id } : {}), onTop: total(t), wall: t - x.ts });
+  const rows = [row(x.ts, "pushed")];
+  let dropped = null;
+  for (const c of d.covers) {
+    rows.push(row(c.start, "paused", c.members[0].y));
+    if (c.end < x.at) {
+      // the item that ended last (and was pushed last, if tied) is the one whose end gave the top back
+      const last = c.members.filter((m) => m.end === c.end).sort((p, q) => q.y.ts - p.y.ts)[0];
+      rows.push(row(c.end, "back", last.y));
+    } else {
+      const still = c.members.filter((m) => m.rawEnd > x.at).sort((p, q) => q.y.ts - p.y.ts)[0];
+      if (still) dropped = still.y;
+      else rows.push(row(c.end, "back", c.members.filter((m) => m.end === c.end).sort((p, q) => q.y.ts - p.y.ts)[0].y)); // all ended at the very instant it did
+    }
+  }
+  rows.push(row(x.at, dropped ? "dropped" : "popped", dropped));
+  return { start: x.ts, end: x.at, onTop: total(x.at), wall: x.at - x.ts, rows };
 }
 
 /** "<1 min", "12 min", "1 h 5 min", "2 h", "1 d 2 h". Empty for anything that is not a duration. */
@@ -84,4 +129,28 @@ export function doneRow(item, all, locale, nowMs = Date.now()) {
   if (!ok(item.at)) return { start, end: DASH, duration: DASH };
   const d = formatDuration(timeOnTop(item, all));
   return { start, end: formatClock(item.at), duration: d || DASH };
+}
+
+const totalText = (ms) => (ms === 0 ? "0 min" : formatDuration(ms));
+const WHAT = {
+  pushed: () => "Pushed",
+  paused: (r) => `Paused: ${r.who} pushed`,
+  back: (r) => `Back on top: ${r.who} ended`,
+  popped: () => "Popped",
+  dropped: (r) => (r.who ? `Dropped: ${r.who} still on top` : "Dropped"),
+};
+
+/**
+ * The details panel for a Done today item: the title (its text), a summary line, and the timeline as display strings.
+ * Null when there is nothing real to show (no end time). The last row's On top is the Done today row's duration,
+ * because both come from the same derivation.
+ */
+export function detailsFor(item, all, nowMs, locale) {
+  const t = timeline(item, all);
+  if (!t) return null;
+  return {
+    title: item.text,
+    summary: `Started ${formatStart(t.start, nowMs, locale)} · Ended ${formatClock(t.end)}`,
+    rows: t.rows.map((r) => ({ time: formatStart(r.t, nowMs, locale), what: WHAT[r.kind](r), onTop: totalText(r.onTop), wall: totalText(r.wall) })),
+  };
 }
