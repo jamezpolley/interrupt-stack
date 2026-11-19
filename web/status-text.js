@@ -18,3 +18,23 @@ export function statusLabel({ state, pending, error }) {
   const kind = FAILURES[error?.kind];
   return (kind ? kind(error) : "Offline") + unsent;
 }
+
+// The one-word header status. The full message (statusLabel) goes in the panel and the button's aria-label.
+export function shortStatus({ state, error }) {
+  if (state === "local") return "Local only";
+  if (state === "synced") return "Synced";
+  if (state === "syncing") return "Syncing";
+  switch (error?.kind) {
+    case "sign-in": return "Sign-in";
+    case "server-error":
+    case "client-error": return `Error ${error.status}`;
+    case "unreachable": return "Unreachable";
+    case "bad-reply": return "Error";
+    default: return "Offline"; // no-network, or no known kind
+  }
+}
+
+/** The full plain-language message with no unsent count: the heading of the Debug panel. */
+export const statusMessage = ({ state, error }) => statusLabel({ state, pending: 0, error });
+
+export const unsentWords = (n) => (n > 0 ? `${n} ${n === 1 ? "change" : "changes"} waiting to sync` : "");

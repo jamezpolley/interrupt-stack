@@ -1,11 +1,12 @@
 import { createSync } from "./sync.js";
 import { openStorage, QUEUE_DB_NAME } from "./idb.js";
 import { createQueue, QUEUE_LABEL } from "./queue.js";
+import { currentPane, pillFor } from "./pane.js";
 import { createEventStream } from "./events.js";
 import { canUpdateNow, describeServerUpdate, forceRefresh, readVersionInfo, requestServerCheck, updateServerNow } from "./refresh.js";
 import { completedToday } from "./today.js";
 import { formatFailure } from "./debug-text.js";
-import { statusLabel } from "./status-text.js";
+import { shortStatus, statusLabel, statusMessage, unsentWords } from "./status-text.js";
 import { LOCAL_ONLY } from "./config.js";
 import { startInstallPrompt } from "./install.js";
 
@@ -37,7 +38,7 @@ const STORAGE_NOTE = "This device could not save your changes locally. Keep this
 let storageNoteShown = false;
 
 // One line for both structures: the worst state of the two, and every unsent change counted. The failure kind (and
-// so the Debug link) comes from the stack, which records it; a failure only the Later sync has shows as plain
+// so the status button) comes from the stack, which records it; a failure only the Later sync has shows as plain
 // "Offline" / "Sync problem".
 function combinedStatus() {
   const st = sync.status();
@@ -70,9 +71,20 @@ function renderStatus({ state, pending, storageFailed, error, neverSynced }) {
     showingNeverSynced = unsynced;
     if (sync) render();
   }
-  $("debug-btn").hidden = !(error && sync?.lastFailure());
-  const label = statusLabel({ state, pending, error });
-  $("status").textContent = label;
+  // A named failure shows as a button that opens the Debug panel; anything else is plain text. Unsent changes show as a count.
+  const trouble = state === "offline" || state === "error";
+  const failed = trouble && !!error && !!sync?.lastFailure();
+  const word = shortStatus({ state, pending, error });
+  const showCount = trouble && pending > 0;
+  $("status-btn").hidden = !failed;
+  $("status-plain").hidden = failed;
+  $("status").textContent = word;
+  $("status-count-plain").hidden = !showCount || failed;
+  $("status-count-plain").textContent = String(pending);
+  $("status-word").textContent = word;
+  $("status-count").hidden = !showCount;
+  $("status-count").textContent = String(pending);
+  $("status-btn").setAttribute("aria-label", `${statusLabel({ state, pending, error })}. Show details`);
   $("dot").className = "dot" + (state === "synced" ? " ok" : state === "offline" || state === "error" ? " warn" : "");
   if (storageFailed && !storageNoteShown) showNote(STORAGE_NOTE);
   if (!storageFailed && storageNoteShown) showNote("");
@@ -165,7 +177,7 @@ function render() {
 
 function renderQueue() {
   const items = queue ? queue.queue() : [];
-  $("to-queue").textContent = items.length ? `${QUEUE_LABEL} ${items.length} \u203a` : `${QUEUE_LABEL} \u203a`;
+  updatePill(items.length);
   $("queue-empty").hidden = items.length > 0;
   const list = $("queue");
   list.textContent = "";
@@ -204,11 +216,26 @@ function labelQueue() {
   $("queue-add").textContent = "Add";
   $("queue-add").setAttribute("aria-label", `Add to ${name}`);
   $("queue-empty").textContent = `Nothing in ${name}.`;
-  $("to-queue").setAttribute("aria-label", `Show ${name}`);
-  $("to-stack").setAttribute("aria-label", "Show the stack");
 }
 
-// On a phone the panes sit side by side and scroll sideways; the edge tabs do the same as a swipe.
+// The header pill points at the other pane, so its words depend on which one is showing (a swipe changes that).
+let laterCount = 0;
+function updatePill(count = laterCount) {
+  laterCount = count;
+  let pane = "stack";
+  try {
+    const board = $("board");
+    pane = currentPane(board.scrollLeft, board.clientWidth);
+  } catch {}
+  const pill = pillFor({ pane, count, label: QUEUE_LABEL });
+  const el = $("pane-pill");
+  el.textContent = pill.text;
+  el.setAttribute("aria-label", pill.aria);
+  el.setAttribute("aria-controls", pill.target === "queue" ? "pane-queue" : "pane-stack");
+  el.dataset.target = pill.target;
+}
+
+// On a phone the panes sit side by side and scroll sideways; the header pill does the same as a swipe.
 function showPane(id) {
   const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
   $(id).scrollIntoView({ behavior: reduce ? "auto" : "smooth", inline: "start", block: "nearest" });
@@ -391,12 +418,22 @@ async function init() {
     if (!item) inp.value = text;
     inp.focus();
   });
-  $("to-queue").addEventListener("click", () => showPane("pane-queue"));
-  $("to-stack").addEventListener("click", () => showPane("pane-stack"));
+  $("pane-pill").addEventListener("click", () => showPane($("pane-pill").dataset.target === "queue" ? "pane-queue" : "pane-stack"));
+  let paneFrame = 0;
+  $("board").addEventListener("scroll", () => {
+    cancelAnimationFrame(paneFrame);
+    paneFrame = requestAnimationFrame(() => updatePill());
+  }, { passive: true });
+  addEventListener("resize", () => updatePill());
   $("undo-btn").addEventListener("click", undo);
-  $("debug-btn").addEventListener("click", () => {
+  $("status-btn").addEventListener("click", () => {
     const f = sync.lastFailure();
     if (!f) return;
+    const st = combinedStatus();
+    $("debug-title").textContent = statusMessage(st);
+    const unsent = unsentWords(st.pending);
+    $("debug-unsent").textContent = unsent;
+    $("debug-unsent").hidden = !unsent;
     $("debug-text").textContent = formatFailure(f);
     $("debug-copy-msg").hidden = true;
     $("debug-dialog").showModal();

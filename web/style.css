@@ -54,7 +54,15 @@ main{
   padding-right:max(16px,env(safe-area-inset-right,0px));
   display:flex;flex-direction:column;gap:20px;
 }
-header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+/* Header: title and status share a row while they fit; a long status drops to a row of its own
+   instead of squeezing the title. Version and the Later pill always share the last row. */
+header{display:flex;flex-wrap:wrap;align-items:baseline;column-gap:12px;row-gap:2px}
+header .meta{margin-left:auto;min-width:0;max-width:100%}
+header .meta #depth,header .meta button{white-space:nowrap;flex:none}
+header .meta>span{min-width:0}
+#status-plain .count{margin-left:6px}
+header .subhead{flex:1 0 100%;display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0}
+header .version{min-width:0;overflow-wrap:anywhere}
 h1{margin:0;font-size:1.25rem;font-weight:600;text-wrap:balance}
 .version{font-family:var(--font-mono);font-size:.6875rem;color:var(--muted);opacity:.7;margin-top:2px}
 .meta{font-family:var(--font-mono);font-size:.8125rem;color:var(--muted);display:flex;gap:12px;align-items:center}
@@ -128,7 +136,13 @@ button.icon:hover:not(:disabled){border-color:var(--line)}
 .install-actions{display:flex;gap:8px;flex-wrap:wrap}
 .install button{min-height:36px;padding:4px 12px;font-size:.8125rem}
 
-button.link{min-height:0;padding:0 2px;border:0;background:transparent;color:var(--accent);font:inherit;font-size:inherit;text-decoration:underline;cursor:pointer}
+/* The header status becomes a button when it names a failure; it opens the Debug panel. Same invisible tap padding as the pill. */
+.status-btn{position:relative;display:inline-flex;align-items:center;gap:6px;min-height:0;padding:0;border:0;background:transparent;color:inherit;font:inherit;white-space:nowrap;cursor:pointer;border-radius:6px}
+.status-btn::before{content:"";position:absolute;inset:-12px -8px}
+.status-btn .dot{margin-right:0}
+.status-btn #status-word{text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:3px}
+.count{font-size:.6875rem;line-height:1;padding:2px 6px;border:1px solid var(--warn);border-radius:9px;color:var(--warn)}
+#debug-unsent{margin:0;font-size:.875rem}
 dialog{
   width:calc(100% - 32px);max-width:640px;max-height:calc(100% - 32px);padding:14px;margin:auto;
   background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:10px;
@@ -149,9 +163,9 @@ dialog::backdrop{background:rgba(0,0,0,.5)}
 .board{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;overscroll-behavior-x:contain;scrollbar-width:none;gap:24px;margin:0 -16px;padding:0 16px;scroll-padding:0 16px}
 .board::-webkit-scrollbar{display:none}
 .pane{flex:0 0 100%;scroll-snap-align:start;scroll-snap-stop:always;min-width:0;display:flex;flex-direction:column;gap:20px;align-self:flex-start}
-.pane-nav{display:flex}
-#pane-stack .pane-nav{justify-content:flex-end}
-.pane-tab{min-height:36px;padding:4px 12px;font-size:.8125rem;border-color:var(--accent);color:var(--accent)}
+/* The header pill moves between the panes. Small to look at, 44px to hit: the ::before extends the tap area. */
+.pill{position:relative;min-height:0;height:28px;padding:0 12px;font-size:.8125rem;line-height:1;border-color:var(--accent);color:var(--accent);border-radius:14px;white-space:nowrap;align-self:center}
+.pill::before{content:"";position:absolute;inset:-9px -7px}
 #queue-form input{flex:1 1 10rem}
 button.add{border-color:var(--accent);color:var(--accent)}
 .queue-empty{margin:0}
@@ -159,5 +173,5 @@ button.add{border-color:var(--accent);color:var(--accent)}
 @media (min-width:700px){
   .board{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);overflow:visible;margin:0;padding:0;gap:24px;scroll-snap-type:none}
   .pane{align-self:start}
-  .pane-nav{display:none}
+  .pill{display:none}
 }
