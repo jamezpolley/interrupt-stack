@@ -135,6 +135,14 @@ button.icon:hover:not(:disabled){border-color:var(--line)}
 .done li .item-age,.done-cols span{text-align:right}
 .done-cols{padding:0 13px;margin-bottom:-2px;font-size:.6875rem}
 .done-cols::before{content:""}
+/* The Started column appears only when the Done today list itself is wide enough (its own width, not the window's, so it
+   also works in the two-column layout where the stack pane is only part of the page): the text column keeps >= ~225px. */
+.done{container-type:inline-size}
+.done .col-start{display:none}
+@container (min-width:520px){
+  .done li,.done-cols{grid-template-columns:minmax(0,1fr) 6.5rem 4rem 5rem}
+  .done .col-start{display:block}
+}
 .done .item-text{color:var(--muted)}
 .server-update{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
 .server-update button{min-height:36px;padding:4px 12px;font-size:.8125rem}
