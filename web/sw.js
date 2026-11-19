@@ -1,6 +1,6 @@
 // App-shell service worker. Never touches /api/ or non-GET requests: sync is the app's job (sync.js).
 // Bump CACHE when the list of shell files changes; old caches are deleted on activate.
-const CACHE = "interrupt-stack-v9";
+const CACHE = "interrupt-stack-v10";
 // Everything is relative to where this file is served from, so the app works under any path or host.
 const BASE = new URL("./", self.location).href;
 const BASE_PATH = new URL(BASE).pathname;
@@ -43,8 +43,8 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const req = event.request;
   const url = new URL(req.url);
-  // Never cached: the server's own endpoints, and the static version's version.json (how it learns of an update).
-  const live = url.pathname.startsWith(BASE_PATH + "api/") || ["metrics", "healthz", "version.json"].some((n) => url.pathname === BASE_PATH + n);
+  // Never cached (navigations to /login included, so the sign-in redirect always reaches the network): the server's own endpoints, and the static version's version.json (how it learns of an update).
+  const live = url.pathname.startsWith(BASE_PATH + "api/") || ["metrics", "healthz", "login", "version.json"].some((n) => url.pathname === BASE_PATH + n);
   if (req.method !== "GET" || url.origin !== location.origin || live) return;
 
   // Cache first so the app opens instantly and offline; refresh the cached copy in the background.

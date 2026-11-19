@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { shortStatus, statusLabel, statusMessage, unsentWords } from "./status-text.js";
+import { offersSignIn, shortStatus, statusLabel, statusMessage, unsentWords } from "./status-text.js";
 
 describe("statusLabel", () => {
   test("states without a failure", () => {
@@ -71,5 +71,14 @@ describe("panel text", () => {
     expect(unsentWords(0)).toBe("");
     expect(unsentWords(1)).toBe("1 change waiting to sync");
     expect(unsentWords(3)).toBe("3 changes waiting to sync");
+  });
+});
+
+describe("offersSignIn", () => {
+  test("only for a sign-in failure, never in the static version", () => {
+    expect(offersSignIn({ kind: "sign-in" }, false)).toBe(true);
+    expect(offersSignIn({ kind: "sign-in" }, true)).toBe(false);
+    for (const kind of ["no-network", "unreachable", "server-error", "client-error", "bad-reply"]) expect(offersSignIn({ kind }, false)).toBe(false);
+    expect(offersSignIn(undefined, false)).toBe(false);
   });
 });

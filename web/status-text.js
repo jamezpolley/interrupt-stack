@@ -38,3 +38,6 @@ export function shortStatus({ state, error }) {
 export const statusMessage = ({ state, error }) => statusLabel({ state, pending: 0, error });
 
 export const unsentWords = (n) => (n > 0 ? `${n} ${n === 1 ? "change" : "changes"} waiting to sync` : "");
+
+/** The Debug panel offers a Sign in button for a sign-in failure only, and never where there is no server to sign in to. */
+export const offersSignIn = (error, local) => !local && error?.kind === "sign-in";
