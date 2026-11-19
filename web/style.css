@@ -166,7 +166,7 @@ dialog::backdrop{background:rgba(0,0,0,.5)}
 }
 
 /* Stack and queue: separate structures, side by side. Narrow: horizontal panes you swipe (or tap the edge tab) between. */
-.board{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;overscroll-behavior-x:contain;scrollbar-width:none;gap:24px;margin:0 -16px;padding:0 16px;scroll-padding:0 16px}
+.board{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;overscroll-behavior-x:contain;scrollbar-width:none;gap:24px;margin:-6px -16px;padding:6px 16px;scroll-padding:0 16px}
 .board::-webkit-scrollbar{display:none}
 .pane{flex:0 0 100%;scroll-snap-align:start;scroll-snap-stop:always;min-width:0;display:flex;flex-direction:column;gap:20px;align-self:flex-start}
 /* The header pill moves between the panes. Small to look at, 44px to hit: the ::before extends the tap area. */
