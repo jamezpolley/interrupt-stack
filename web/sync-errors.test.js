@@ -180,3 +180,87 @@ describe("never synced", () => {
     expect(sync.status().neverSynced).toBeUndefined();
   });
 });
+
+describe("lastFailure (debug detail)", () => {
+  const detail = async (respond, opts) => (await run(respond, opts)).sync.lastFailure();
+
+  test("none before any failure and none after success", async () => {
+    expect((await run(ok)).sync.lastFailure()).toBeNull();
+  });
+
+  test("a network failure records the request, the error and onLine", async () => {
+    const d = await detail(() => Promise.reject(new TypeError("Failed to fetch")), { online: () => false });
+    expect(d.request).toEqual({ method: "PUT", url: expect.stringMatching(/^\/api\/items\/s-/) });
+    expect(d.error).toEqual({ name: "TypeError", message: "Failed to fetch" });
+    expect(d.online).toBe(false);
+    expect(d.response).toBeUndefined();
+  });
+
+  test("a 502 records status, status text, type, url, redirected, headers and the raw body", async () => {
+    const d = await detail(() => html({ status: 502, statusText: "Bad Gateway" }));
+    expect(d.request.method).toBe("PUT");
+    expect(d.response.status).toBe(502);
+    expect(d.response.statusText).toBe("Bad Gateway");
+    expect(d.response.type).toBe("default");
+    expect(d.response.redirected).toBe(false);
+    expect(d.response.headers).toContainEqual(["content-type", "text/html"]);
+    expect(d.response.body).toBe("<html>Sign in</html>");
+  });
+
+  test("a failing pull records a GET", async () => {
+    const d = await detail((p, i) => (i.method === "PUT" ? saved() : new Response("oops", { status: 500 })));
+    expect(d.request).toEqual({ method: "GET", url: "/api/items?since=0" });
+  });
+
+  test("an opaque redirect records what little there is", async () => {
+    const r = { type: "opaqueredirect", status: 0, statusText: "", ok: false, redirected: false, url: "", headers: new Headers() };
+    const d = await detail(() => r);
+    expect(d.response).toMatchObject({ type: "opaqueredirect", status: 0, headers: [] });
+    expect(d.response.body).toBeNull();
+  });
+
+  test("a body that is not JSON despite its content type is kept for display", async () => {
+    const d = await detail(() => new Response("<html", { status: 200, headers: { "content-type": "application/json" } }));
+    expect(d.response.body).toBe("<html");
+  });
+
+  test("a rejected push records its response", async () => {
+    const d = await detail((p, i) => (i.method === "PUT" ? new Response('{"error":"bad"}', { status: 400, headers: { "content-type": "application/json" } }) : empty()));
+    expect(d.response.status).toBe(400);
+    expect(d.response.body).toBe('{"error":"bad"}');
+  });
+
+  test("long bodies are truncated and flagged", async () => {
+    const d = await detail(() => new Response("x".repeat(10000), { status: 500 }));
+    expect(d.response.body.length).toBe(4096);
+    expect(d.response.bodyTruncated).toBe(true);
+  });
+
+  test("cookie and authorization headers are never kept", async () => {
+    const d = await detail(() => new Response("no", { status: 401, headers: { "set-cookie": "a=b", authorization: "x", "x-ok": "1" } }));
+    const names = d.response.headers.map(([k]) => k);
+    expect(names).toContain("x-ok");
+    expect(names).not.toContain("set-cookie");
+    expect(names).not.toContain("authorization");
+  });
+
+  test("the request body and headers are not part of the detail", async () => {
+    const d = await detail(() => Promise.reject(new TypeError("x")));
+    expect(JSON.stringify(d)).not.toContain("one"); // the pushed text
+  });
+
+  test("cleared after a later success", async () => {
+    let fail = true;
+    const { sync } = await run((p, i) => (fail ? Promise.reject(new TypeError("x")) : ok(p, i)));
+    expect(sync.lastFailure()).not.toBeNull();
+    fail = false;
+    await sync.syncNow();
+    expect(sync.lastFailure()).toBeNull();
+  });
+
+  test("the static version has none", async () => {
+    const sync = createSync({ storage: memStorage(), fetch: async () => Promise.reject(new TypeError("x")), local: true });
+    await sync.start();
+    expect(sync.lastFailure()).toBeNull();
+  });
+});

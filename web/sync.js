@@ -7,10 +7,36 @@ const permanentlyRejected = (status) => status >= 400 && status < 500 && status 
 
 // What went wrong with a request, as far as the UI needs to tell the person: a kind, plus the HTTP status when there is one.
 class SyncFailure extends Error {
-  constructor(error) {
+  constructor(error, res = null, body) {
     super(error.kind);
     this.error = error;
+    this.res = res; // the response behind it, for the debug detail
+    this.body = body; // its body text, when it was already read
   }
+}
+
+const BODY_LIMIT = 4096;
+const NEVER_KEPT = new Set(["set-cookie", "set-cookie2", "cookie", "authorization", "proxy-authorization"]);
+
+// What the browser lets us see of a failed response, kept in memory only for the Debug panel.
+async function describeResponse(res, body) {
+  if (body === undefined) {
+    try {
+      body = await res.clone().text();
+    } catch {
+      body = null;
+    }
+  }
+  const headers = [];
+  try {
+    for (const [k, v] of res.headers ?? []) if (!NEVER_KEPT.has(k.toLowerCase())) headers.push([k, v]);
+  } catch {}
+  const out = { status: res.status, statusText: res.statusText ?? "", type: res.type ?? "", redirected: !!res.redirected, url: res.url ?? "", headers, body };
+  if (typeof body === "string" && body.length > BODY_LIMIT) {
+    out.body = body.slice(0, BODY_LIMIT);
+    out.bodyTruncated = true;
+  }
+  return out;
 }
 
 const isJson = (res) => /\bjson\b/i.test(res.headers?.get?.("content-type") ?? "");
@@ -21,17 +47,19 @@ const wantsSignIn = (res) => res.type === "opaqueredirect" || res.redirected || 
 
 // Throws the matching failure unless the response is one the app can use. Callers handle 4xx themselves where they must.
 function assertUsable(res) {
-  if (wantsSignIn(res)) throw new SyncFailure({ kind: "sign-in" });
-  if (res.status >= 500) throw new SyncFailure({ kind: "server-error", status: res.status });
-  if (!res.ok) throw new SyncFailure({ kind: "client-error", status: res.status });
-  if (!isJson(res)) throw new SyncFailure({ kind: "sign-in" }); // HTML where JSON was expected: a login page
+  if (wantsSignIn(res)) throw new SyncFailure({ kind: "sign-in" }, res);
+  if (res.status >= 500) throw new SyncFailure({ kind: "server-error", status: res.status }, res);
+  if (!res.ok) throw new SyncFailure({ kind: "client-error", status: res.status }, res);
+  if (!isJson(res)) throw new SyncFailure({ kind: "sign-in" }, res); // HTML where JSON was expected: a login page
 }
 
 async function readJson(res) {
+  let text = null;
   try {
-    return await res.json();
+    text = await res.text();
+    return JSON.parse(text);
   } catch {
-    throw new SyncFailure({ kind: "bad-reply" });
+    throw new SyncFailure({ kind: "bad-reply" }, res, text);
   }
 }
 
@@ -42,6 +70,7 @@ export function createSync({ storage, fetch, now = () => Date.now(), online = ()
   let lastSeq = 0;
   let epoch = null; // identifies the server database we last synced with
   let state = local ? "local" : "syncing";
+  let lastFailure = null; // raw detail of the latest failed call, in memory only
   let lastError = null; // why the latest pass failed; null after a pass that worked
   let storageFailed = false;
   let running = null;
@@ -51,6 +80,7 @@ export function createSync({ storage, fetch, now = () => Date.now(), online = ()
   const setState = (s, error = null) => {
     state = s;
     lastError = error;
+    if (!error) lastFailure = null;
     onStatus(status());
   };
 
@@ -92,18 +122,21 @@ export function createSync({ storage, fetch, now = () => Date.now(), online = ()
 
   async function pass() {
     setState("syncing");
+    let req = null; // the call in flight, for the failure detail
     try {
       const rejected = new Map(); // id -> status
       const init = { redirect: "manual" };
       for (const id of [...dirty]) {
         const sent = items.get(id);
-        const res = await fetch(`/api/items/${encodeURIComponent(id)}`, {
+        req = { method: "PUT", url: `/api/items/${encodeURIComponent(id)}` };
+        const res = await fetch(req.url, {
           ...init,
           method: "PUT",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ text: sent.text, ts: sent.ts, removed: sent.removed, at: sent.at }),
         });
         if (!wantsSignIn(res) && permanentlyRejected(res.status)) {
+          if (!rejected.size) lastFailure = { at: now(), request: req, online: online(), response: await describeResponse(res) };
           rejected.set(id, res.status); // keep it, but do not let it block the rest of the queue
           continue;
         }
@@ -117,7 +150,8 @@ export function createSync({ storage, fetch, now = () => Date.now(), online = ()
         }
       }
 
-      const res = await fetch(`/api/items?since=${lastSeq}`, init);
+      req = { method: "GET", url: `/api/items?since=${lastSeq}` };
+      const res = await fetch(req.url, init);
       assertUsable(res);
       const data = await readJson(res);
 
@@ -152,6 +186,10 @@ export function createSync({ storage, fetch, now = () => Date.now(), online = ()
       else setState(changedMeanwhile ? "syncing" : "synced");
       if (changedMeanwhile) rerun = true;
     } catch (e) {
+      const detail = { at: now(), request: req, online: online() };
+      if (e instanceof SyncFailure && e.res) detail.response = await describeResponse(e.res, e.body);
+      else if (!(e instanceof SyncFailure)) detail.error = { name: e?.name ?? "Error", message: String(e?.message ?? e) };
+      lastFailure = detail;
       // A TypeError from fetch means no answer at all: the device has no network, or the server cannot be reached.
       setState("offline", e instanceof SyncFailure ? e.error : { kind: online() ? "unreachable" : "no-network" });
     }
@@ -235,5 +273,7 @@ export function createSync({ storage, fetch, now = () => Date.now(), online = ()
 
     syncNow,
     status,
+    /** Raw detail of the latest failed call (memory only), or null. */
+    lastFailure: () => lastFailure,
   };
 }
