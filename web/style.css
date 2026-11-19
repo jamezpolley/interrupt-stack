@@ -143,6 +143,7 @@ button.icon:hover:not(:disabled){border-color:var(--line)}
 .status-btn #status-word{text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:3px}
 .count{font-size:.6875rem;line-height:1;padding:2px 6px;border:1px solid var(--warn);border-radius:9px;color:var(--warn)}
 #debug-unsent{margin:0;font-size:.875rem}
+#debug-signin{margin:0;display:flex;gap:12px;align-items:center;flex-wrap:wrap;font-size:.875rem}
 dialog{
   width:calc(100% - 32px);max-width:640px;max-height:calc(100% - 32px);padding:14px;margin:auto;
   background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:10px;

@@ -6,7 +6,7 @@ import { createEventStream } from "./events.js";
 import { canUpdateNow, describeServerUpdate, forceRefresh, readVersionInfo, requestServerCheck, updateServerNow } from "./refresh.js";
 import { completedToday } from "./today.js";
 import { formatFailure } from "./debug-text.js";
-import { shortStatus, statusLabel, statusMessage, unsentWords } from "./status-text.js";
+import { offersSignIn, shortStatus, statusLabel, statusMessage, unsentWords } from "./status-text.js";
 import { LOCAL_ONLY } from "./config.js";
 import { startInstallPrompt } from "./install.js";
 
@@ -434,9 +434,15 @@ async function init() {
     const unsent = unsentWords(st.pending);
     $("debug-unsent").textContent = unsent;
     $("debug-unsent").hidden = !unsent;
+    $("debug-signin").hidden = !offersSignIn(st.error, LOCAL_ONLY);
     $("debug-text").textContent = formatFailure(f);
     $("debug-copy-msg").hidden = true;
     $("debug-dialog").showModal();
+  });
+  // A top-level navigation to the server's /login (relative to this page), which the sign-in proxy intercepts;
+  // after signing in the person is sent back to /login, which redirects into the app.
+  $("signin-btn").addEventListener("click", () => {
+    location.href = new URL("login", location.href).href;
   });
   $("debug-close").addEventListener("click", () => $("debug-dialog").close());
   $("debug-copy").addEventListener("click", async () => {

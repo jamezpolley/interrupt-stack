@@ -44,7 +44,7 @@ export function createApp(
 
   // Route labels come from a fixed set so a scanner hitting random paths cannot grow the metric series.
   function routeLabel(pathname: string): string {
-    if (pathname === "/healthz" || pathname === "/metrics" || pathname === "/api/events" || pathname === "/api/items" || pathname === "/api/queue" || pathname === "/api/version" || pathname === "/api/update-check" || pathname === "/api/update") return pathname;
+    if (pathname === "/healthz" || pathname === "/login" || pathname === "/metrics" || pathname === "/api/events" || pathname === "/api/items" || pathname === "/api/queue" || pathname === "/api/version" || pathname === "/api/update-check" || pathname === "/api/update") return pathname;
     if (/^\/api\/items\/[^/]+$/.test(pathname)) return "/api/items/:id";
     if (/^\/api\/queue\/[^/]+$/.test(pathname)) return "/api/queue/:id";
     return pathname.startsWith("/api/") ? "/api/other" : "static";
@@ -203,6 +203,12 @@ export function createApp(
     const url = new URL(req.url);
     const { pathname } = url;
     if (pathname === "/healthz") return new Response("ok");
+    // The sign-in landing page. Behind the sign-in proxy an unauthenticated request never gets here: the proxy
+    // intercepts it, and after sign-in sends the person back to this path, which sends them into the app.
+    // A relative Location, so it works under any host or path; no state, and never cached.
+    if (pathname === "/login" && (req.method === "GET" || req.method === "HEAD")) {
+      return new Response(null, { status: 302, headers: { location: "./", "cache-control": "no-store" } });
+    }
     if (pathname === "/metrics" && req.method === "GET") {
       return new Response(metricsText(), { headers: { "content-type": "text/plain; version=0.0.4; charset=utf-8" } });
     }

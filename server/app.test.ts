@@ -479,3 +479,33 @@ describe("queue api", () => {
     expect(text).toContain('route="/api/queue/:id"');
   });
 });
+
+describe("login route", () => {
+  test("GET /login redirects to the app root, relative, uncacheable, with nothing else", async () => {
+    const res = await get("/login");
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("./");
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(await res.text()).toBe("");
+  });
+
+  test("it ignores query strings and needs no state", async () => {
+    const res = await get("/login?next=http://elsewhere.example/");
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("./");
+  });
+
+  test("HEAD works too; other methods are not served", async () => {
+    const head = await app.fetch(new Request("http://t/login", { method: "HEAD" }));
+    expect(head.status).toBe(302);
+    expect(head.headers.get("location")).toBe("./");
+    const post = await app.fetch(new Request("http://t/login", { method: "POST" }));
+    expect(post.status).toBe(404);
+  });
+
+  test("it has its own metrics route label", async () => {
+    await get("/login");
+    const text = await (await get("/metrics")).text();
+    expect(text).toContain('route="/login",method="GET",code="302"');
+  });
+});
