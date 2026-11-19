@@ -559,3 +559,23 @@ describe("version base (the commit the image was built from)", () => {
     expect(Object.keys(v).sort()).toEqual(["base", "commit", "label", "startedAt", "update", "version"]);
   });
 });
+
+describe("editing over the API", () => {
+  test("PUT with edit:true corrects a finished item and returns edited_at; without it the old copy cannot undo it", async () => {
+    await put("s-aaaa", { text: "old", ts: 1000, removed: false });
+    await put("s-aaaa", { text: "old", ts: 1000, removed: true, at: 5000 });
+    const edited = await (await put("s-aaaa", { text: "new", ts: 1000, removed: true, at: 3000, edit: true })).json();
+    expect(edited).toMatchObject({ text: "new", at: 3000 });
+    expect(typeof edited.edited_at).toBe("number");
+    const stale = await (await put("s-aaaa", { text: "old", ts: 1000, removed: true, at: 5000 })).json();
+    expect(stale).toMatchObject({ text: "new", at: 3000, edited_at: edited.edited_at });
+  });
+
+  test("an edit that ends before it starts is a 400", async () => {
+    await put("s-aaaa", { text: "x", ts: 1000, removed: false });
+    await put("s-aaaa", { text: "x", ts: 1000, removed: true, at: 5000 });
+    const res = await put("s-aaaa", { text: "x", ts: 1000, removed: true, at: 500, edit: true });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/before the start/);
+  });
+});

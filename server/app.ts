@@ -173,7 +173,7 @@ export function createApp(
     if ("error" in body) return body.error;
     const { data } = body;
     try {
-      const item = store.upsert(id, { text: data.text, ts: data.ts, removed: data.removed === true, at: data.at, origin: data.origin });
+      const item = store.upsert(id, { text: data.text, ts: data.ts, removed: data.removed === true, at: data.at, origin: data.origin, edit: data.edit === true });
       notify();
       return json(item);
     } catch (e) {
