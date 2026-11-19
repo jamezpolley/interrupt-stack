@@ -9,6 +9,7 @@ import { detailsFor, doneRow, formatStart } from "./times.js";
 import { formatFailure } from "./debug-text.js";
 import { offersSignIn, shortStatus, statusLabel, statusMessage, unsentWords } from "./status-text.js";
 import { LOCAL_ONLY } from "./config.js";
+import { versionLine } from "./version-line.js";
 import { startInstallPrompt } from "./install.js";
 
 const $ = (id) => document.getElementById(id);
@@ -391,12 +392,7 @@ async function init() {
   } catch {} // localStorage itself can throw; the prompt is optional
   // What this copy of the app was built from (cached with the app). A server without /version.js has none.
   const build = await import("./version.js").catch(() => null);
-  $("version").textContent =
-    typeof build?.LABEL === "string" && build.LABEL
-      ? build.LABEL
-      : typeof build?.COMMIT === "string"
-        ? build.COMMIT.slice(0, 7)
-        : "version unknown";
+  $("version").textContent = versionLine(build);
   setUpInstall();
   let storage;
   try {
@@ -513,6 +509,8 @@ async function init() {
     const newer = current && typeof info?.version === "string" && info.version ? info.version !== current : null;
     if (newer !== null) $("update").hidden = !newer;
     if (info) {
+      // The server also says which commit its image was built from, when that differs (it has updated itself).
+      if (!LOCAL_ONLY) $("version").textContent = versionLine(build, info);
       const notice = LOCAL_ONLY ? null : describeServerUpdate(info);
       if (!updatingServer) {
         $("server-update-text").textContent = notice ?? "";

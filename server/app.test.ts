@@ -509,3 +509,26 @@ describe("login route", () => {
     expect(text).toContain('route="/login",method="GET",code="302"');
   });
 });
+
+describe("version base (the commit the image was built from)", () => {
+  const A = "a".repeat(40);
+  const B = "b".repeat(40);
+  const ver = async (opts: object) => {
+    const a = createApp(store, { webDir: dir, ...opts });
+    return (await a.fetch(new Request("http://t/api/version"))).json();
+  };
+  test("reported when it differs from the running commit (the self-updated case)", async () => {
+    const v = await ver({ commit: A, baseCommit: B });
+    expect(v.base).toBe(B);
+    expect(v.commit).toBe(A);
+  });
+  test("left out when it is the same commit, unknown, or the running commit is unknown", async () => {
+    for (const opts of [{ commit: A, baseCommit: A }, { commit: A }, { commit: A, baseCommit: null }, { commit: null, baseCommit: B }, {}]) {
+      expect("base" in (await ver(opts)), JSON.stringify(opts)).toBe(false);
+    }
+  });
+  test("the existing fields are unchanged", async () => {
+    const v = await ver({ commit: A, label: "v1", baseCommit: B });
+    expect(Object.keys(v).sort()).toEqual(["base", "commit", "label", "startedAt", "update", "version"]);
+  });
+});

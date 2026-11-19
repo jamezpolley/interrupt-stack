@@ -1,5 +1,6 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { codeVersion } from "./gitver";
 
 // Startup self-update. The image holds a baked copy of the code with its .git. At start we try to move to the newest
 // commit of a branch or tag from GitHub, in a writable copy; if anything fails we run the baked code. After starting
@@ -104,8 +105,14 @@ export type Supervised = {
   abandonedPid?: number;
 };
 
-const startServer = (dir: string, port: number) =>
-  Bun.spawn(["bun", join(dir, "server", "main.ts")], { cwd: dir, env: { ...process.env, PORT: String(port), INTERRUPT_STACK_SUPERVISED: "1" }, stdout: "inherit", stderr: "inherit" });
+// The child is told which commit the image was built from (the baked code), so it can say when it has updated past it.
+// Unknown means the variable is removed, so a stale one from the environment is never passed on.
+const startServer = (dir: string, port: number, baseCommit: string | null) => {
+  const env: Record<string, string | undefined> = { ...process.env, PORT: String(port), INTERRUPT_STACK_SUPERVISED: "1" };
+  if (baseCommit) env.INTERRUPT_STACK_BASE_COMMIT = baseCommit;
+  else delete env.INTERRUPT_STACK_BASE_COMMIT;
+  return Bun.spawn(["bun", join(dir, "server", "main.ts")], { cwd: dir, env, stdout: "inherit", stderr: "inherit" });
+};
 
 async function becomesHealthy(child: ReturnType<typeof Bun.spawn>, port: number, windowMs: number): Promise<boolean> {
   const deadline = Date.now() + windowMs;
@@ -122,15 +129,16 @@ async function becomesHealthy(child: ReturnType<typeof Bun.spawn>, port: number,
 
 export async function supervise(cfg: SuperviseConfig): Promise<Supervised> {
   const log = cfg.log ?? ((l: string) => console.log(`[update] ${l}`));
+  const base = codeVersion(cfg.bakedDir).commit;
   if (cfg.update === false) {
     log("updating is switched off; running the code in the image");
-    return { child: startServer(cfg.bakedDir, cfg.port), dir: cfg.bakedDir, updated: false, fellBack: false, commit: null };
+    return { child: startServer(cfg.bakedDir, cfg.port, base), dir: cfg.bakedDir, updated: false, fellBack: false, commit: null };
   }
   const prep = await prepareLiveCopy(cfg);
   log(prep.reason);
-  if (!prep.updated) return { child: startServer(prep.dir, cfg.port), dir: prep.dir, updated: false, fellBack: false, commit: prep.commit };
+  if (!prep.updated) return { child: startServer(prep.dir, cfg.port, base), dir: prep.dir, updated: false, fellBack: false, commit: prep.commit };
 
-  const child = startServer(prep.dir, cfg.port);
+  const child = startServer(prep.dir, cfg.port, base);
   if (await becomesHealthy(child, cfg.port, cfg.healthWindowMs ?? 30_000)) {
     log(`updated code is healthy (${prep.commit?.slice(0, 7)})`);
     return { child, dir: prep.dir, updated: true, fellBack: false, commit: prep.commit };
@@ -143,5 +151,5 @@ export async function supervise(cfg: SuperviseConfig): Promise<Supervised> {
   if (!stopped) child.kill("SIGKILL");
   await child.exited;
   if (prep.commit) addQuarantine(cfg.dataDir, prep.commit);
-  return { child: startServer(cfg.bakedDir, cfg.port), dir: cfg.bakedDir, updated: true, fellBack: true, commit: null, abandonedPid };
+  return { child: startServer(cfg.bakedDir, cfg.port, base), dir: cfg.bakedDir, updated: true, fellBack: true, commit: null, abandonedPid };
 }

@@ -57,7 +57,7 @@ The first line of the container log says what the code is:
 interrupt-stack v1.2.0-3-g5a7581b (commit 5a7581b3c9d1) listening on :9958, data in /data
 ```
 
-The label is the nearest git tag (`v1.2.0`), the tag plus how far past it (`v1.2.0-3-g5a7581b`), or just the short commit when there are no tags. The same label shows in small grey text under the heading in the app (for the copy of the app that device is running, so a device that has not refreshed yet shows its older label), and `GET /api/version` returns it with the full commit. If nothing can tell (an image built from a folder with no `.git`), it says `version unknown`.
+The label is the nearest git tag (`v1.2.0`), the tag plus how far past it (`v1.2.0-3-g5a7581b`), or just the short commit when there are no tags. The same label shows in small grey text under the heading in the app (for the copy of the app that device is running, so a device that has not refreshed yet shows its older label), and `GET /api/version` returns it with the full commit. If nothing can tell (an image built from a folder with no `.git`), it says `version unknown`. When the server has updated itself past the commit its image was built from, the line also shows that commit, for example `v1.2.0-3-g5a7581b · image 3a4ff67`, so you can tell the image has fallen behind and a rebuild would catch it up; `GET /api/version` returns it as `base`. It is left out when they are the same or the image's commit is unknown.
 
 ### Baking in a clone, and updating at start
 
