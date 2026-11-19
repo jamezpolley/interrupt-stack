@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { COOLDOWN_DAYS, decideInstall, parseDismissal } from "./install.js";
+import { COOLDOWN_DAYS, decideInstall, instructionsFor, parseDismissal } from "./install.js";
 
 const DAY = 86400000;
 const NOW = Date.UTC(2026, 10, 19, 12);
@@ -95,5 +95,14 @@ describe("parseDismissal", () => {
   test("accepts a stored millisecond timestamp", () => expect(parseDismissal(String(NOW))).toBe(NOW));
   test("junk, empty and missing give null", () => {
     for (const v of [null, undefined, "", "abc", "-5", "NaN", "Infinity"]) expect(parseDismissal(v)).toBeNull();
+  });
+});
+
+describe("instructionsFor", () => {
+  test("every variant names Share and Add to Home Screen", () => {
+    for (const v of [{ device: "iphone", browser: "safari" }, { device: "ipad", browser: "safari" }, { device: "iphone", browser: "other" }]) {
+      expect(instructionsFor(v)).toMatch(/Share/);
+      expect(instructionsFor(v)).toMatch(/Add to Home Screen/);
+    }
   });
 });
