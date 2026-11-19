@@ -25,6 +25,8 @@ Open the https address once online, then:
 - **iPhone / iPad (Safari):** Share, then Add to Home Screen.
 - **Windows / ChromeOS (Chrome or Edge):** use the install icon in the address bar, or the menu's Install option.
 
+The app also offers this itself: a small "Install" banner on Chromium browsers, and short Share, Add to Home Screen instructions on iPhone and iPad. It never shows when the app is already installed, and "Not now" hides it for 14 days (remembered in the browser's local storage). Firefox and desktop Safari get nothing. It makes no network calls, so the static version behaves the same.
+
 ## Deploying from git with Dockhand
 
 Settings below come from Dockhand's manual (https://dockhand.pro/manual, read 2026-11-17):

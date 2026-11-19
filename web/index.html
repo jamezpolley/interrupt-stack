@@ -50,6 +50,14 @@
     <button type="button" class="primary" id="update-btn">Refresh app</button>
   </div>
 
+  <div class="update install" id="install" role="region" aria-label="Install this app" hidden>
+    <span id="install-text"></span>
+    <span class="install-actions">
+      <button type="button" class="primary" id="install-btn" hidden>Install</button>
+      <button type="button" id="install-dismiss">Not now</button>
+    </span>
+  </div>
+
   <section id="now-wrap" aria-live="polite"></section>
 
   <div class="toast" id="toast" hidden>

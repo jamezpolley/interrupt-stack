@@ -4,6 +4,7 @@ import { createEventStream } from "./events.js";
 import { canUpdateNow, describeServerUpdate, forceRefresh, readVersionInfo, requestServerCheck, updateServerNow } from "./refresh.js";
 import { completedToday } from "./today.js";
 import { LOCAL_ONLY } from "./config.js";
+import { startInstallPrompt } from "./install.js";
 
 const $ = (id) => document.getElementById(id);
 const UNDO_MS = 15000;
@@ -235,6 +236,15 @@ function setUpInstall() {
 }
 
 async function init() {
+  // Early, so a beforeinstallprompt fired during start-up is not missed. Shows nothing unless install is possible.
+  try {
+    startInstallPrompt({
+      win: window,
+      nav: navigator,
+      storage: localStorage,
+      els: { box: $("install"), text: $("install-text"), install: $("install-btn"), dismiss: $("install-dismiss") },
+    });
+  } catch {} // localStorage itself can throw; the prompt is optional
   // What this copy of the app was built from (cached with the app). A server without /version.js has none.
   const build = await import("./version.js").catch(() => null);
   $("version").textContent =

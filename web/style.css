@@ -124,3 +124,5 @@ button.icon:hover:not(:disabled){border-color:var(--line)}
 .done .item-text{color:var(--muted)}
 .server-update{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
 .server-update button{min-height:36px;padding:4px 12px;font-size:.8125rem}
+.install-actions{display:flex;gap:8px;flex-wrap:wrap}
+.install button{min-height:36px;padding:4px 12px;font-size:.8125rem}
