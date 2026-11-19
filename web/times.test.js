@@ -443,6 +443,15 @@ describe("detailsFor: the words in the panel", () => {
     expect(detailsFor(x, [x, y], NOWD, "en-US").rows.at(-1).onTop).toBe(doneRow(x, [x, y], "en-US", NOWD).duration);
   });
 
+  test("another item's text is shown in its label form, not as a raw address", () => {
+    const x = mk("x", "Write report", 0, 90);
+    const y = mk("y", "Email Ben vellum://note/abc/Forward?vault=Q", 30, 45);
+    const d = detailsFor(x, [x, y], NOWD, "en-US");
+    expect(d.rows[1].what).toBe("Paused: Email Ben Vellum \u2197 pushed");
+    expect(d.rows[2].what).toBe("Back on top: Email Ben Vellum \u2197 ended");
+    expect(d.title).toBe("Write report"); // the title is rendered with real links by the page
+  });
+
   test("nothing to show for an item with no end time", () => {
     expect(detailsFor(mk("x", "x", 0, null), [], NOWD, "en-US")).toBeNull();
   });

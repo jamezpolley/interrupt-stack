@@ -7,6 +7,7 @@ import { canUpdateNow, describeServerUpdate, forceRefresh, readVersionInfo, requ
 import { completedToday } from "./today.js";
 import { detailsFor, doneRow, formatStart } from "./times.js";
 import { pushAgain } from "./again.js";
+import { displayText, renderLinked } from "./links.js";
 import { formatFailure } from "./debug-text.js";
 import { offersSignIn, shortStatus, statusLabel, statusMessage, unsentWords } from "./status-text.js";
 import { LOCAL_ONLY } from "./config.js";
@@ -106,7 +107,7 @@ function render() {
     l.textContent = "Working on";
     const t = document.createElement("div");
     t.className = "now-text";
-    t.textContent = top.text;
+    renderLinked(t, top.text);
     const foot = document.createElement("div");
     foot.className = "now-foot";
     const a = document.createElement("span");
@@ -138,13 +139,13 @@ function render() {
     if (body.tagName === "BUTTON") {
       body.type = "button";
       body.dataset.itemId = it.id;
-      body.setAttribute("aria-label", `Details for ${it.text}`);
+      body.setAttribute("aria-label", `Details for ${displayText(it.text)}`);
       body.setAttribute("aria-haspopup", "dialog");
       body.addEventListener("click", () => openDetails(it.id));
     }
     const tx = document.createElement("span");
     tx.className = "item-text";
-    tx.textContent = it.text;
+    renderLinked(tx, it.text, { links: false }); // inside a button: the same label as plain text
     const start = document.createElement("span");
     start.className = "item-age col-start";
     start.textContent = row.start;
@@ -172,7 +173,7 @@ function render() {
     d.textContent = String(stack.length - 1 - i);
     const tx = document.createElement("span");
     tx.className = "item-text";
-    tx.textContent = it.text;
+    renderLinked(tx, it.text);
     const ag = document.createElement("span");
     ag.className = "item-age";
     ag.textContent = formatStart(it.ts, Date.now());
@@ -180,7 +181,7 @@ function render() {
     x.type = "button";
     x.className = "drop";
     x.textContent = "Drop";
-    x.setAttribute("aria-label", `Drop ${it.text} from the stack`);
+    x.setAttribute("aria-label", `Drop ${displayText(it.text)} from the stack`);
     x.addEventListener("click", () => removeItem(it));
     li.append(d, tx, ag, x);
     under.appendChild(li);
@@ -197,18 +198,18 @@ function renderQueue() {
     const li = document.createElement("li");
     const tx = document.createElement("span");
     tx.className = "item-text";
-    tx.textContent = it.text;
+    renderLinked(tx, it.text);
     const go = document.createElement("button");
     go.type = "button";
     go.className = "start";
     go.textContent = "Start";
-    go.setAttribute("aria-label", `Start ${it.text}`);
+    go.setAttribute("aria-label", `Start ${displayText(it.text)}`);
     go.addEventListener("click", () => queue.promote(it.id));
     const x = document.createElement("button");
     x.type = "button";
     x.className = "drop";
     x.textContent = "Drop";
-    x.setAttribute("aria-label", `Drop ${it.text} from ${QUEUE_LABEL}`);
+    x.setAttribute("aria-label", `Drop ${displayText(it.text)} from ${QUEUE_LABEL}`);
     x.addEventListener("click", async () => {
       await queue.drop(it.id);
       offerUndo(it, "queue");
@@ -261,7 +262,7 @@ function openDetails(id) {
   const d = item && detailsFor(item, all, Date.now());
   if (!d) return;
   detailsFor_id = id;
-  $("details-title").textContent = d.title;
+  renderLinked($("details-title"), d.title);
   $("details-summary").textContent = d.summary;
   const body = $("details-rows");
   body.textContent = "";
@@ -280,7 +281,7 @@ function openDetails(id) {
 
 function offerUndo(it, kind = "stack") {
   lastRemoved = { it, kind };
-  $("toast-text").textContent = `Removed: ${it.text}`;
+  $("toast-text").textContent = `Removed: ${displayText(it.text)}`;
   $("toast").hidden = false;
   clearTimeout(undoTimer);
   undoTimer = setTimeout(() => {

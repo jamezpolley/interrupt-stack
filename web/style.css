@@ -209,3 +209,7 @@ button.add{border-color:var(--accent);color:var(--accent)}
   .pane{align-self:start}
   .pill{display:none}
 }
+
+/* Links inside task text: the accent colour with a quiet underline; a little vertical padding makes them easier to tap. */
+a.tl{color:var(--accent);text-decoration:underline;text-decoration-color:color-mix(in srgb,var(--accent) 45%,transparent);text-underline-offset:3px;padding:3px 0;border-radius:3px}
+a.tl:hover,a.tl:focus-visible{text-decoration-color:var(--accent)}

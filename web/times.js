@@ -1,3 +1,5 @@
+import { displayText } from "./links.js";
+
 // Time helpers for the lists: how long an item was on top, and absolute times. Pure, so they run under `bun test`.
 
 const MIN = 60000;
@@ -134,10 +136,10 @@ export function doneRow(item, all, locale, nowMs = Date.now()) {
 const totalText = (ms) => (ms === 0 ? "0 min" : formatDuration(ms));
 const WHAT = {
   pushed: () => "Pushed",
-  paused: (r) => `Paused: ${r.who} pushed`,
-  back: (r) => `Back on top: ${r.who} ended`,
+  paused: (r) => `Paused: ${displayText(r.who)} pushed`,
+  back: (r) => `Back on top: ${displayText(r.who)} ended`,
   popped: () => "Popped",
-  dropped: (r) => (r.who ? `Dropped: ${r.who} still on top` : "Dropped"),
+  dropped: (r) => (r.who ? `Dropped: ${displayText(r.who)} still on top` : "Dropped"),
 };
 
 /**
