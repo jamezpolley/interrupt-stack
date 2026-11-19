@@ -31,14 +31,6 @@
     </div>
   </header>
 
-  <form id="push-form" autocomplete="off">
-    <input type="text" id="push-input" maxlength="200" placeholder="What are you starting now?" aria-label="New task to push onto the stack">
-    <span class="split">
-      <button type="submit" class="primary" id="push-btn">Push</button>
-      <button type="button" id="swap-btn" title="Push this, and pop the current task" aria-label="Push this, and pop the current task" disabled>&amp; Pop</button>
-    </span>
-  </form>
-
   <p class="note" id="note" hidden></p>
   <p class="note quiet-note" id="refresh-msg" role="status" hidden></p>
   <p class="note quiet-note server-update" id="server-update" role="status" hidden>
@@ -59,8 +51,6 @@
     </span>
   </div>
 
-  <section id="now-wrap" aria-live="polite"></section>
-
   <dialog id="debug-dialog" aria-labelledby="debug-title">
     <div class="debug-head">
       <h2 id="debug-title">Last failed call</h2>
@@ -78,13 +68,42 @@
     <button type="button" id="undo-btn">Undo</button>
   </div>
 
-  <section class="under" id="under-wrap" hidden>
-    <ol id="under" aria-label="Underneath the current task"></ol>
-  </section>
-  <section class="done" id="done-wrap" hidden>
-    <div class="label">Done today</div>
-    <ol id="done"></ol>
-  </section>
+  <div class="board" id="board">
+    <section class="pane" id="pane-stack" aria-label="Stack">
+      <div class="pane-nav">
+        <button type="button" class="pane-tab" id="to-queue" aria-controls="pane-queue"></button>
+      </div>
+      <form id="push-form" autocomplete="off">
+        <input type="text" id="push-input" maxlength="200" placeholder="What are you starting now?" aria-label="New task to push onto the stack">
+        <span class="split">
+          <button type="submit" class="primary" id="push-btn">Push</button>
+          <button type="button" id="swap-btn" title="Push this, and pop the current task" aria-label="Push this, and pop the current task" disabled>&amp; Pop</button>
+        </span>
+      </form>
+
+      <section id="now-wrap" aria-live="polite"></section>
+      <section class="under" id="under-wrap" hidden>
+        <ol id="under" aria-label="Underneath the current task"></ol>
+      </section>
+      <section class="done" id="done-wrap" hidden>
+        <div class="label">Done today</div>
+        <ol id="done"></ol>
+      </section>
+    </section>
+
+    <section class="pane" id="pane-queue" data-queue-aria>
+      <div class="pane-nav">
+        <button type="button" class="pane-tab" id="to-stack" aria-controls="pane-stack">&lsaquo; Stack</button>
+      </div>
+      <form id="queue-form" autocomplete="off">
+        <input type="text" id="queue-input" maxlength="200">
+        <button type="submit" class="add" id="queue-add"></button>
+      </form>
+      <div class="label" data-queue-label></div>
+      <p class="empty" id="queue-empty"></p>
+      <ol id="queue"></ol>
+    </section>
+  </div>
 
 </main>
 <script type="module" src="app.js"></script>

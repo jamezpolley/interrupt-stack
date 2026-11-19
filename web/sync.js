@@ -112,8 +112,7 @@ export function createSync({ storage, fetch, now = () => Date.now(), online = ()
   }
   const setItem = (item) => setItems([item]);
 
-  const newItem = (text, ts) => {
-    const id = `s-${ts.toString(36)}${Math.random().toString(36).slice(2, 6).padEnd(4, "0")}`;
+  const newItem = (text, ts, id = `s-${ts.toString(36)}${Math.random().toString(36).slice(2, 6).padEnd(4, "0")}`) => {
     return { id, text, ts, at: ts, removed: false, seq: 0 };
   };
 
@@ -241,10 +240,18 @@ export function createSync({ storage, fetch, now = () => Date.now(), online = ()
       return [...items.values()];
     },
 
-    async push(text) {
+    /** Whether an item with this id exists here, removed or not. */
+    has: (id) => items.has(id),
+
+    /**
+     * Push a task. `opts.id` pins the id (the queue uses it so that starting a queued task twice is the same push):
+     * if that id is already here, removed or not, nothing changes and the existing item is returned.
+     */
+    async push(text, opts = {}) {
       const trimmed = String(text ?? "").trim();
       if (!trimmed) return null;
-      const item = newItem(trimmed, now());
+      if (opts.id && items.has(opts.id)) return items.get(opts.id);
+      const item = newItem(trimmed, now(), opts.id);
       await setItem(item);
       return item;
     },

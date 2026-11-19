@@ -133,3 +133,15 @@ describe("event stream", () => {
     expect(current().closed).toBe(true);
   });
 });
+
+describe("queue events", () => {
+  test("qseq goes to onQueueSeq and seq to onSeq, independently", () => {
+    FakeSource.all = [];
+    const got = [];
+    const stream = createEventStream({ url: "/api/events", make: (u) => new FakeSource(u), onSeq: () => got.push("seq"), onQueueSeq: () => got.push("qseq") });
+    stream.connect();
+    FakeSource.all[0].emit("qseq");
+    FakeSource.all[0].emit("seq");
+    expect(got).toEqual(["qseq", "seq"]);
+  });
+});

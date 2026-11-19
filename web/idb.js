@@ -1,5 +1,7 @@
 // IndexedDB implementation of the Storage interface used by sync.js.
 const DB_NAME = "interrupt-stack";
+// The queue lives in a database of its own, so what the stack's code opens never changes shape.
+export const QUEUE_DB_NAME = "interrupt-stack-queue";
 
 function request(req) {
   return new Promise((resolve, reject) => {
@@ -8,9 +10,9 @@ function request(req) {
   });
 }
 
-export async function openStorage() {
+export async function openStorage(dbName = DB_NAME) {
   const db = await new Promise((resolve, reject) => {
-    const open = indexedDB.open(DB_NAME, 1);
+    const open = indexedDB.open(dbName, 1);
     open.onupgradeneeded = () => {
       open.result.createObjectStore("items", { keyPath: "id" });
       open.result.createObjectStore("meta", { keyPath: "key" });
