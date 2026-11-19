@@ -123,19 +123,18 @@ const NOW = at(2026, 11, 19, 15, 30); // a Thursday
 
 describe("formatStart", () => {
   test("today: just the time, in the device's style", () => {
-    expect(formatStart(at(2026, 11, 19, 9, 12), NOW, "en-US")).toBe(formatClock(at(2026, 11, 19, 9, 12), "en-US"));
-    expect(formatStart(at(2026, 11, 19, 9, 12), NOW, "en-US")).toMatch(/9:12 AM$/);
+    expect(formatStart(at(2026, 11, 19, 9, 12), NOW, "en-US")).toBe("09:12");
   });
   test("within the last 7 days: weekday and time", () => {
     const s = formatStart(at(2026, 11, 18, 16, 50), NOW, "en-US");
     expect(s).toMatch(/^Wed /);
-    expect(s).toMatch(/4:50 PM$/);
+    expect(s).toMatch(/ 16:50$/);
     expect(formatStart(at(2026, 11, 13, 8, 0), NOW, "en-US")).toMatch(/^Fri /); // six days back
   });
   test("a week or more ago: date and time", () => {
     const s = formatStart(at(2026, 11, 12, 16, 50), NOW, "en-US");
     expect(s).toMatch(/^Nov 12, /);
-    expect(s).toMatch(/4:50 PM$/);
+    expect(s).toMatch(/, 16:50$/);
   });
   test("the day boundary is the device's midnight", () => {
     expect(formatStart(at(2026, 11, 19, 0, 0), NOW, "en-US")).not.toMatch(/^Thu/);
@@ -152,18 +151,52 @@ describe("formatStart", () => {
 
 describe("doneRow", () => {
   const b = at(2026, 11, 19, 9, 0);
-  const row = (x, all = [x]) => doneRow(x, all, "en-US");
+  const row = (x, all = [x]) => doneRow(x, all, "en-US", at(2026, 11, 19, 15, 0));
   test("end time and time on top", () => {
     const a = { id: "a", text: "a", ts: b, at: b + 30 * MIN, removed: true };
     const c = { id: "c", text: "c", ts: b + 10 * MIN, at: b + 20 * MIN, removed: true };
-    expect(row(a, [a, c])).toEqual({ end: formatClock(b + 30 * MIN, "en-US"), duration: "20 min" });
+    expect(row(a, [a, c])).toEqual({ start: "09:00", end: "09:30", duration: "20 min" });
   });
   test("an item with no end time shows dashes, not its push time", () => {
     const old = { id: "o", text: "o", ts: b, removed: true };
-    expect(row(old)).toEqual({ end: "\u2014", duration: "\u2014" });
+    expect(row(old)).toEqual({ start: "09:00", end: "\u2014", duration: "\u2014" });
   });
   test("an impossible span keeps the end time but shows no duration", () => {
     const x = { id: "x", text: "x", ts: b + 10 * MIN, at: b, removed: true };
-    expect(row(x)).toEqual({ end: formatClock(b, "en-US"), duration: "\u2014" });
+    expect(row(x)).toEqual({ start: "09:10", end: "09:00", duration: "\u2014" });
+  });
+});
+
+describe("24-hour clock, whatever the device locale", () => {
+  const c = (h, m) => at(2026, 11, 19, h, m);
+  test("always two-digit 24-hour", () => {
+    for (const loc of ["en-US", "en-GB", "de-DE", "ja-JP", "ar-EG", "hi-IN", undefined]) {
+      expect(formatClock(c(14, 49), loc)).toBe("14:49");
+      expect(formatClock(c(9, 5), loc)).toBe("09:05");
+    }
+  });
+  test("midnight is 00:xx, never 24:xx", () => {
+    expect(formatClock(c(0, 5), "en-US")).toBe("00:05");
+    expect(formatClock(c(0, 0), "en-US")).toBe("00:00");
+    expect(formatClock(c(23, 59), "en-US")).toBe("23:59");
+    expect(formatClock(c(12, 0), "en-US")).toBe("12:00");
+  });
+  test("the weekday and date forms carry the same clock", () => {
+    expect(formatStart(at(2026, 11, 18, 0, 5), at(2026, 11, 19, 15, 30), "en-US")).toMatch(/^Wed 00:05$/);
+    expect(formatStart(at(2026, 11, 1, 23, 8), at(2026, 11, 19, 15, 30), "en-US")).toMatch(/, 23:08$/);
+  });
+});
+
+describe("doneRow started", () => {
+  const NOWD = at(2026, 11, 19, 15, 0);
+  test("today's push shows just the time; an earlier day is date-aware", () => {
+    const today = { id: "t", text: "t", ts: at(2026, 11, 19, 0, 5), at: at(2026, 11, 19, 1, 0), removed: true };
+    const earlier = { id: "e", text: "e", ts: at(2026, 11, 18, 16, 50), at: at(2026, 11, 19, 9, 0), removed: true };
+    expect(doneRow(today, [today], "en-US", NOWD).start).toBe("00:05");
+    expect(doneRow(earlier, [earlier], "en-US", NOWD).start).toBe("Wed 16:50");
+  });
+  test("an item with no end time still has a real start", () => {
+    const old = { id: "o", text: "o", ts: at(2026, 11, 19, 7, 0), removed: true };
+    expect(doneRow(old, [old], "en-US", NOWD)).toEqual({ start: "07:00", end: "\u2014", duration: "\u2014" });
   });
 });

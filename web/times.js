@@ -47,8 +47,15 @@ export function formatDuration(ms) {
   return hh ? `${d} d ${hh} h` : `${d} d`;
 }
 
-/** A clock time in the device's own style (12 or 24 hour as its locale says). */
-export const formatClock = (ts, locale) => new Date(ts).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
+/**
+ * A clock time as 24-hour HH:MM with a two-digit hour, whatever the device's locale. Built from the local hours and
+ * minutes directly (not Intl), so no locale can give 12-hour text, other digits, or "24:05" at midnight.
+ * The `locale` argument is kept so callers need not change; it no longer affects the clock.
+ */
+export const formatClock = (ts) => {
+  const d = new Date(ts);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+};
 
 const startOfDay = (ms) => {
   const d = new Date(ms);
@@ -69,11 +76,12 @@ export function formatStart(ts, nowMs, locale) {
 const DASH = "—";
 
 /**
- * The two right-hand columns of a Done today row. An item with no end time (stored before end times existed) has
+ * The right-hand columns of a Done today row: when it started, when it ended, how long it was on top. An item with no end time (stored before end times existed) has
  * neither: its push time is not an end time, so both show a dash. `all` is every item, removed ones included.
  */
-export function doneRow(item, all, locale) {
-  if (!ok(item.at)) return { end: DASH, duration: DASH };
+export function doneRow(item, all, locale, nowMs = Date.now()) {
+  const start = formatStart(item.ts, nowMs, locale); // the time today, date-aware for an earlier day
+  if (!ok(item.at)) return { start, end: DASH, duration: DASH };
   const d = formatDuration(timeOnTop(item, all));
-  return { end: formatClock(item.at, locale), duration: d || DASH };
+  return { start, end: formatClock(item.at), duration: d || DASH };
 }

@@ -132,14 +132,17 @@ function render() {
     const tx = document.createElement("span");
     tx.className = "item-text";
     tx.textContent = it.text;
-    const row = doneRow(it, all);
+    const row = doneRow(it, all, undefined, Date.now());
+    const start = document.createElement("span");
+    start.className = "item-age col-start";
+    start.textContent = row.start;
     const end = document.createElement("span");
     end.className = "item-age";
     end.textContent = row.end;
     const dur = document.createElement("span");
     dur.className = "item-age";
     dur.textContent = row.duration;
-    li.append(tx, end, dur);
+    li.append(tx, start, end, dur);
     doneList.appendChild(li);
   }
 
