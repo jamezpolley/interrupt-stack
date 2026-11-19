@@ -1,13 +1,18 @@
 import { Database } from "bun:sqlite";
 
 /** `at` is the device's clock when the item last changed state (equal to `ts` for a fresh push). */
-export type Item = { id: string; text: string; ts: number; at: number; removed: boolean; seq: number; origin?: string };
+export type Item = { id: string; text: string; ts: number; at: number; removed: boolean; seq: number; origin?: string; edited_at?: number };
 /**
  * `origin` is the id of the item this one was pushed again from. It is set once, when the row is created, and never
  * changes. Absent or null means "not given": a write without it (an older client) leaves a stored origin untouched.
  */
-export type ItemInput = { text: string; ts: number; removed: boolean; at?: number; origin?: string | null };
-export type LogEvent = { n: number; ts: number; at: number; op: "push" | "pop" | "restore" | "queue" | "dequeue" | "requeue" | "start"; id: string; text: string };
+/**
+ * `edit: true` marks a deliberate correction of an existing item's text, ts or (for a finished item) end time.
+ * Without it, a write to an existing row keeps the stored text and ts, so a client holding an old copy (an older
+ * build, or a device that has not synced yet) cannot undo an edit by sending its state again. A new row ignores it.
+ */
+export type ItemInput = { text: string; ts: number; removed: boolean; at?: number; origin?: string | null; edit?: boolean };
+export type LogEvent = { n: number; ts: number; at: number; op: "push" | "pop" | "restore" | "queue" | "dequeue" | "requeue" | "start" | "edit"; id: string; text: string; detail?: string };
 
 /**
  * The queue is a pile of things to do later, kept apart from the stack: its own table, its own `seq` numbering and
@@ -25,6 +30,7 @@ export class ValidationError extends Error {
 }
 
 export const MAX_TEXT = 200;
+const SKEW_MS = 5 * 60_000; // how far past the server clock an edited time may be before it is refused
 const ID_RE = /^s-[a-z0-9]{4,40}$/;
 const QUEUE_ID_RE = /^q-[a-z0-9]{4,40}$/;
 
@@ -45,9 +51,9 @@ export interface Store {
 type QueueRow = { id: string; text: string; ts: number; at: number; removed: number; started: number; seq: number };
 const toQueueItem = (r: QueueRow): QueueItem => ({ id: r.id, text: r.text, ts: r.ts, at: r.at, removed: r.removed === 1, started: r.started === 1, seq: r.seq });
 
-type Row = { id: string; text: string; ts: number; at: number | null; removed: number; seq: number; origin: string | null };
+type Row = { id: string; text: string; ts: number; at: number | null; removed: number; seq: number; origin: string | null; edited_at: number | null };
 // `origin` is left out when there is none, so rows that were never pushed again look exactly as they always did.
-const toItem = (r: Row): Item => ({ id: r.id, text: r.text, ts: r.ts, at: r.at ?? r.ts, removed: r.removed === 1, seq: r.seq, ...(r.origin ? { origin: r.origin } : {}) });
+const toItem = (r: Row): Item => ({ id: r.id, text: r.text, ts: r.ts, at: r.at ?? r.ts, removed: r.removed === 1, seq: r.seq, ...(r.origin ? { origin: r.origin } : {}), ...(r.edited_at != null ? { edited_at: r.edited_at } : {}) });
 
 export function openStore(path: string, opts: { now?: () => number } = {}): Store {
   const clock = opts.now ?? Date.now;
@@ -61,9 +67,13 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
   if (!columns.some((c) => c.name === "at")) db.run("ALTER TABLE items ADD COLUMN at INTEGER");
   // Databases created before "push again" have no `origin` column.
   if (!columns.some((c) => c.name === "origin")) db.run("ALTER TABLE items ADD COLUMN origin TEXT");
+  // Databases created before editing have no `edited_at` (when the item was last corrected; null if never).
+  if (!columns.some((c) => c.name === "edited_at")) db.run("ALTER TABLE items ADD COLUMN edited_at INTEGER");
   db.run(
     "CREATE TABLE IF NOT EXISTS events (n INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, at INTEGER NOT NULL, op TEXT NOT NULL, id TEXT NOT NULL, text TEXT NOT NULL)",
   );
+  // An `edit` event keeps what changed in `detail`, as JSON: {text?: {from, to}, ts?: {from, to}, at?: {from, to}}.
+  if (!(db.prepare("PRAGMA table_info(events)").all() as { name: string }[]).some((c) => c.name === "detail")) db.run("ALTER TABLE events ADD COLUMN detail TEXT");
   db.run("CREATE INDEX IF NOT EXISTS items_seq ON items (seq)");
   db.run(
     "CREATE TABLE IF NOT EXISTS queue (id TEXT PRIMARY KEY, text TEXT NOT NULL, ts INTEGER NOT NULL, at INTEGER NOT NULL, removed INTEGER NOT NULL, started INTEGER NOT NULL, seq INTEGER NOT NULL)",
@@ -75,19 +85,20 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
   if (!savedEpoch) db.prepare("INSERT INTO meta (key, value) VALUES ('epoch', ?)").run(epoch);
 
   const write = db.prepare(
-    `INSERT INTO items (id, text, ts, at, removed, origin, seq)
-     VALUES ($id, $text, $ts, $at, $removed, $origin, (SELECT COALESCE(MAX(seq), 0) + 1 FROM items))
+    `INSERT INTO items (id, text, ts, at, removed, origin, edited_at, seq)
+     VALUES ($id, $text, $ts, $at, $removed, $origin, NULL, (SELECT COALESCE(MAX(seq), 0) + 1 FROM items))
      ON CONFLICT(id) DO UPDATE SET text = $text, ts = $ts, at = $at, removed = $removed,
        origin = COALESCE(items.origin, $origin),
+       edited_at = COALESCE($editedAt, items.edited_at),
        seq = (SELECT COALESCE(MAX(seq), 0) + 1 FROM items)
-     RETURNING id, text, ts, at, removed, seq, origin`,
+     RETURNING id, text, ts, at, removed, seq, origin, edited_at`,
   );
-  const find = db.prepare("SELECT id, text, ts, at, removed, seq, origin FROM items WHERE id = $id");
+  const find = db.prepare("SELECT id, text, ts, at, removed, seq, origin, edited_at FROM items WHERE id = $id");
   const record = db.prepare(
-    "INSERT INTO events (ts, at, op, id, text) VALUES ($ts, $at, $op, $id, $text)",
+    "INSERT INTO events (ts, at, op, id, text, detail) VALUES ($ts, $at, $op, $id, $text, $detail)",
   );
-  const events = db.prepare("SELECT n, ts, at, op, id, text FROM events ORDER BY n ASC");
-  const later = db.prepare("SELECT id, text, ts, at, removed, seq, origin FROM items WHERE seq > $seq ORDER BY seq ASC");
+  const events = db.prepare("SELECT n, ts, at, op, id, text, detail FROM events ORDER BY n ASC");
+  const later = db.prepare("SELECT id, text, ts, at, removed, seq, origin, edited_at FROM items WHERE seq > $seq ORDER BY seq ASC");
   const maxSeq = db.prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM items");
   const tally = db.prepare(
     "SELECT COALESCE(SUM(removed = 0), 0) AS live, COALESCE(SUM(removed = 1), 0) AS removed FROM items",
@@ -97,10 +108,18 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
   // same state adds nothing. A device only sends an item's latest state, so several offline changes between
   // two syncs show up as the net change. Event times from a device are clamped to the server's clock: a phone
   // whose clock runs ahead must not get stuck in a sync error or put events in the future.
-  const upsertTx = db.transaction((id: string, text: string, ts: number, removed: boolean, at: number | undefined, origin: string | null) => {
+  const upsertTx = db.transaction((id: string, inText: string, inTs: number, removed: boolean, at: number | undefined, origin: string | null, edit: boolean) => {
     const now = clock();
     const clamp = (t: number) => Math.max(0, Math.min(t, now)); // never in the future, never before 1970
     const before = find.get({ $id: id }) as Row | null;
+    // Only a write marked as an edit may change an existing row's text or ts (see ItemInput.edit).
+    const isEdit = edit && before !== null;
+    if (isEdit) {
+      // A phone's clock may run a little ahead, so a few minutes past the server's clock is clamped, not refused.
+      if (inTs > now + SKEW_MS || (at !== undefined && at > now + SKEW_MS)) throw new ValidationError("a time cannot be in the future");
+    }
+    const text = before && !isEdit ? before.text : inText;
+    const ts = before && !isEdit ? before.ts : isEdit ? clamp(inTs) : inTs;
     // A later write can describe an older state (a retry whose response was lost, a device that was offline).
     // Whichever arrives last still wins, as before, but its event is never dated earlier than the item's last one,
     // so the history of one item always reads forwards.
@@ -119,11 +138,22 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
     } else if (before.removed === 1 && !removed) {
       itemAt = after(at ?? now);
       changes.push(["restore", itemAt]);
+    } else if (isEdit && removed && at !== undefined) {
+      itemAt = clamp(at); // a deliberate correction of the end time: the floor above is for retried events, not for this
     } else {
       itemAt = before.at ?? before.ts;
     }
-    const saved = toItem(write.get({ $id: id, $text: text, $ts: ts, $at: itemAt, $removed: removed ? 1 : 0, $origin: origin }) as Row);
-    for (const [op, when] of changes) record.run({ $ts: now, $at: when, $op: op, $id: id, $text: text });
+    if (isEdit && removed && itemAt < ts) throw new ValidationError("the end cannot be before the start");
+    const diff: Record<string, { from: unknown; to: unknown }> = {};
+    if (isEdit) {
+      if (before!.text !== text) diff.text = { from: before!.text, to: text };
+      if (before!.ts !== ts) diff.ts = { from: before!.ts, to: ts };
+      if (before!.removed === 1 && removed && (before!.at ?? before!.ts) !== itemAt) diff.at = { from: before!.at ?? before!.ts, to: itemAt };
+    }
+    const edited = Object.keys(diff).length > 0;
+    const saved = toItem(write.get({ $id: id, $text: text, $ts: ts, $at: itemAt, $removed: removed ? 1 : 0, $origin: origin, $editedAt: edited ? now : null }) as Row);
+    for (const [op, when] of changes) record.run({ $ts: now, $at: when, $op: op, $id: id, $text: text, $detail: null });
+    if (edited) record.run({ $ts: now, $at: now, $op: "edit", $id: id, $text: text, $detail: JSON.stringify(diff) });
     return saved;
   });
 
@@ -171,7 +201,7 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
     const saved = toQueueItem(
       writeQueue.get({ $id: id, $text: text, $ts: ts, $at: itemAt, $removed: removed ? 1 : 0, $started: keepStarted ? 1 : 0 }) as QueueRow,
     );
-    for (const [op, when] of changes) record.run({ $ts: now, $at: when, $op: op, $id: id, $text: text });
+    for (const [op, when] of changes) record.run({ $ts: now, $at: when, $op: op, $id: id, $text: text, $detail: null });
     return saved;
   });
 
@@ -205,7 +235,7 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
       if (at !== undefined && !Number.isSafeInteger(at)) throw new ValidationError("at must be an integer");
       const origin = input.origin ?? null;
       if (origin !== null && (typeof origin !== "string" || !ID_RE.test(origin) || origin === id)) throw new ValidationError("origin must be the id of another item");
-      return upsertTx.immediate(id, text, input.ts, input.removed === true, at, origin);
+      return upsertTx.immediate(id, text, input.ts, input.removed === true, at, origin, input.edit === true);
     },
     since(seq) {
       const items = (later.all({ $seq: seq }) as Row[]).map(toItem);
@@ -215,7 +245,11 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
       return tally.get() as { live: number; removed: number };
     },
     log() {
-      return events.all() as LogEvent[];
+      // `detail` exists only on edit events; leaving it off the rest keeps them looking as they always did.
+      return (events.all() as (LogEvent & { detail: string | null })[]).map((e) => {
+        if (e.detail === null) delete (e as { detail?: unknown }).detail;
+        return e as LogEvent;
+      });
     },
     close() {
       db.close();

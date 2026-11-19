@@ -213,3 +213,15 @@ button.add{border-color:var(--accent);color:var(--accent)}
 /* Links inside task text: the accent colour with a quiet underline; a little vertical padding makes them easier to tap. */
 a.tl{color:var(--accent);text-decoration:underline;text-decoration-color:color-mix(in srgb,var(--accent) 45%,transparent);text-underline-offset:3px;padding:3px 0;border-radius:3px}
 a.tl:hover,a.tl:focus-visible{text-decoration-color:var(--accent)}
+
+/* Editing in the details panel. Save and Cancel sit in the footer, so a long title never pushes them onto a line of their own. */
+.edit-problems{margin:0;font-size:.8125rem;color:var(--warn)}
+.edit-effects{margin:8px 0 0;font-size:.75rem;color:var(--muted)}
+.timeline input{font:inherit;font-family:var(--font-mono);font-size:.8125rem;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 8px;min-width:0}
+.timeline input.bad{border-color:var(--warn);outline:1px solid var(--warn)}
+.timeline input.clock{width:7.5em}
+.timeline input.day{width:7.5em;margin-top:4px}
+input.title-edit{font:inherit;font-weight:600;font-size:1rem;width:100%;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px 10px}
+.details-foot button{min-height:44px}
+.edited-tag{font-size:.6875rem;font-style:italic;color:var(--muted);opacity:.85}
+.details .debug-head h2{flex:1 1 0}

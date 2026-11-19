@@ -61,13 +61,20 @@
         <span class="debug-actions"><button type="button" id="details-close">Close</button></span>
       </div>
       <p class="details-summary" id="details-summary"></p>
+      <p class="edit-problems" id="details-problems" role="alert" hidden></p>
       <div class="details-scroll">
         <table class="timeline">
           <thead><tr><th class="t">Time</th><th class="w">What happened</th><th class="n">On top</th><th class="n">Wall</th></tr></thead>
           <tbody id="details-rows"></tbody>
         </table>
+        <p class="edit-effects" id="details-effects" hidden></p>
       </div>
-      <div class="details-foot"><button type="button" class="primary" id="details-again">Push again</button></div>
+      <div class="details-foot">
+        <button type="button" id="details-edit">Edit</button>
+        <button type="button" class="primary" id="details-again">Push again</button>
+        <button type="button" id="details-cancel" hidden>Cancel</button>
+        <button type="button" class="primary" id="details-save" hidden>Save</button>
+      </div>
     </div>
   </dialog>
 
