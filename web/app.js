@@ -5,7 +5,7 @@ import { currentPane, pillFor } from "./pane.js";
 import { createEventStream } from "./events.js";
 import { canUpdateNow, describeServerUpdate, forceRefresh, readVersionInfo, requestServerCheck, updateServerNow } from "./refresh.js";
 import { completedToday } from "./today.js";
-import { doneRow, formatStart } from "./times.js";
+import { detailsFor, doneRow, formatStart } from "./times.js";
 import { formatFailure } from "./debug-text.js";
 import { offersSignIn, shortStatus, statusLabel, statusMessage, unsentWords } from "./status-text.js";
 import { LOCAL_ONLY } from "./config.js";
@@ -129,10 +129,20 @@ function render() {
   $("done-wrap").hidden = done.length === 0;
   for (const it of done) {
     const li = document.createElement("li");
+    const row = doneRow(it, all, undefined, Date.now());
+    // A row with a real end time opens its details; one without (stored before end times existed) is plain text.
+    const body = document.createElement(Number.isFinite(it.at) ? "button" : "div");
+    body.className = "done-body";
+    if (body.tagName === "BUTTON") {
+      body.type = "button";
+      body.dataset.itemId = it.id;
+      body.setAttribute("aria-label", `Details for ${it.text}`);
+      body.setAttribute("aria-haspopup", "dialog");
+      body.addEventListener("click", () => openDetails(it.id));
+    }
     const tx = document.createElement("span");
     tx.className = "item-text";
     tx.textContent = it.text;
-    const row = doneRow(it, all, undefined, Date.now());
     const start = document.createElement("span");
     start.className = "item-age col-start";
     start.textContent = row.start;
@@ -142,7 +152,8 @@ function render() {
     const dur = document.createElement("span");
     dur.className = "item-age";
     dur.textContent = row.duration;
-    li.append(tx, start, end, dur);
+    body.append(tx, start, end, dur);
+    li.appendChild(body);
     doneList.appendChild(li);
   }
 
@@ -238,6 +249,31 @@ function updatePill(count = laterCount) {
 function showPane(id) {
   const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
   $(id).scrollIntoView({ behavior: reduce ? "auto" : "smooth", inline: "start", block: "nearest" });
+}
+
+// The details panel for a Done today row: every push and pop of that item, with running totals (derived on this device).
+let detailsFor_id = null;
+function openDetails(id) {
+  const all = sync.allItems();
+  const item = all.find((i) => i.id === id);
+  const d = item && detailsFor(item, all, Date.now());
+  if (!d) return;
+  detailsFor_id = id;
+  $("details-title").textContent = d.title;
+  $("details-summary").textContent = d.summary;
+  const body = $("details-rows");
+  body.textContent = "";
+  for (const r of d.rows) {
+    const tr = document.createElement("tr");
+    for (const [text, cls] of [[r.time, "t"], [r.what, "w"], [r.onTop, "n"], [r.wall, "n"]]) {
+      const td = document.createElement("td");
+      td.className = cls;
+      td.textContent = text;
+      tr.appendChild(td);
+    }
+    body.appendChild(tr);
+  }
+  $("details-dialog").showModal();
 }
 
 function offerUndo(it, kind = "stack") {
@@ -444,6 +480,18 @@ async function init() {
     location.href = new URL("login", location.href).href;
   });
   $("debug-close").addEventListener("click", () => $("debug-dialog").close());
+  $("details-close").addEventListener("click", () => $("details-dialog").close());
+  // A click on the backdrop lands on the dialog element itself (its content sits in an inner box that fills it).
+  $("details-dialog").addEventListener("click", (ev) => {
+    if (ev.target === $("details-dialog")) $("details-dialog").close();
+  });
+  // The list is rebuilt whenever anything changes, so the row that opened the panel may be a new element by now:
+  // put focus back on the row for the same item.
+  $("details-dialog").addEventListener("close", () => {
+    const id = detailsFor_id;
+    detailsFor_id = null;
+    if (id) document.querySelector(`#done [data-item-id="${CSS.escape(id)}"]`)?.focus();
+  });
   $("debug-copy").addEventListener("click", async () => {
     let msg = "Copied.";
     try {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { doneRow, formatClock, formatDuration, formatStart, timeOnTop } from "./times.js";
+import { doneRow, formatClock, formatDuration, formatStart, timeline, timeOnTop, detailsFor } from "./times.js";
 
 const MIN = 60000;
 // Items are (id, ts, at, removed). Times are minutes from a base so the arithmetic is easy to read.
@@ -198,5 +198,252 @@ describe("doneRow started", () => {
   test("an item with no end time still has a real start", () => {
     const old = { id: "o", text: "o", ts: at(2026, 11, 19, 7, 0), removed: true };
     expect(doneRow(old, [old], "en-US", NOWD)).toEqual({ start: "07:00", end: "\u2014", duration: "\u2014" });
+  });
+});
+
+// ---- timeline: every push and pop as a row, with running totals ----
+const tl = (x, all) => timeline(x, all);
+const kinds = (t) => t.rows.map((r) => r.kind);
+const sum = (t) => t.rows.map((r) => [r.t, r.kind, r.onTop, r.wall]);
+
+describe("timeline", () => {
+  test("the worked example: pushed 0, interrupted 30-45, popped 90", () => {
+    const x = it("x", 0, 90);
+    const y = it("pay super", 30, 45);
+    const t = tl(x, [x, y]);
+    expect(sum(t)).toEqual([
+      [B, "pushed", 0, 0],
+      [B + 30 * MIN, "paused", 30 * MIN, 30 * MIN],
+      [B + 45 * MIN, "back", 30 * MIN, 45 * MIN],
+      [B + 90 * MIN, "popped", 75 * MIN, 90 * MIN],
+    ]);
+    expect(t.rows[1].who).toBe("pay super");
+    expect(t.rows[2].who).toBe("pay super");
+    expect(t.onTop).toBe(75 * MIN);
+    expect(t.wall).toBe(90 * MIN);
+  });
+
+  test("nothing above it: pushed and popped only", () => {
+    const x = it("x", 0, 30);
+    expect(kinds(tl(x, [x]))).toEqual(["pushed", "popped"]);
+  });
+
+  test("nested pushes make one pause and one return, naming the first pusher and the last to end", () => {
+    const x = it("x", 0, 60);
+    const b = it("b", 10, 50);
+    const c = it("c", 20, 30);
+    const t = tl(x, [x, b, c]);
+    expect(kinds(t)).toEqual(["pushed", "paused", "back", "popped"]);
+    expect(t.rows[1].who).toBe("b");
+    expect(t.rows[2].who).toBe("b");
+    expect(t.onTop).toBe(20 * MIN);
+  });
+
+  test("a drop from the middle: the item above ends later, so the return names it", () => {
+    const x = it("x", 0, 60);
+    const b = it("b", 10, 30);
+    const c = it("c", 20, 40); // pushed over b, still there after b went
+    const t = tl(x, [x, b, c]);
+    expect(kinds(t)).toEqual(["pushed", "paused", "back", "popped"]);
+    expect(t.rows[1].who).toBe("b");
+    expect(t.rows[2].who).toBe("c");
+  });
+
+  test("two separate excursions", () => {
+    const x = it("x", 0, 60);
+    const a = it("a", 10, 20);
+    const b = it("b", 30, 45);
+    expect(kinds(tl(x, [x, a, b]))).toEqual(["pushed", "paused", "back", "paused", "back", "popped"]);
+  });
+
+  test("dropped from underneath an item that is still live: no return, ends as dropped", () => {
+    const x = it("x", 0, 40);
+    const y = it("y", 10, undefined, false);
+    const t = tl(x, [x, y]);
+    expect(kinds(t)).toEqual(["pushed", "paused", "dropped"]);
+    expect(t.rows[2].who).toBe("y");
+    expect(t.onTop).toBe(10 * MIN);
+    expect(t.wall).toBe(40 * MIN);
+  });
+
+  test("a swap: the push at the instant of the pop is not an interruption", () => {
+    const x = it("x", 0, 30);
+    const y = it("y", 30, 50);
+    expect(kinds(tl(x, [x, y]))).toEqual(["pushed", "popped"]);
+  });
+
+  test("an item pushed and popped at the very instant another is pushed leaves no zero-length noise", () => {
+    const x = it("x", 0, 60);
+    const a = it("a", 10, 20);
+    const b = it("b", 20, 30); // pushed the moment a popped: x never came back between them
+    const t = tl(x, [x, a, b]);
+    expect(kinds(t)).toEqual(["pushed", "paused", "back", "popped"]);
+    expect(t.rows[2].t).toBe(B + 30 * MIN);
+    expect(t.rows[2].who).toBe("b");
+  });
+
+  test("the item above ends at the very instant this one does: it still paused, came back, and was popped", () => {
+    const x = it("x", 0, 60);
+    const y = it("y", 30, 60);
+    const t = tl(x, [x, y]);
+    expect(kinds(t)).toEqual(["pushed", "paused", "back", "popped"]);
+    expect(t.onTop).toBe(30 * MIN);
+    expect(t.rows.at(-1).onTop).toBe(30 * MIN);
+  });
+
+  test("identical timestamps and zero-length items", () => {
+    const x = it("x", 5, 5);
+    expect(sum(tl(x, [x]))).toEqual([[B + 5 * MIN, "pushed", 0, 0], [B + 5 * MIN, "popped", 0, 0]]);
+    const y = it("y", 5, 30);
+    const z = it("z", 5, 10);
+    expect(tl(y, [y, z]).onTop).toBe(25 * MIN);
+  });
+
+  test("an item started from Later is an ordinary push", () => {
+    const x = it("x", 0, 30);
+    const later = it("s-later", 5, 15);
+    expect(tl(x, [x, later]).rows[1].who).toBe("s-later");
+  });
+
+  test("two items with the same text are told apart by id", () => {
+    const x = { ...it("x", 0, 30), text: "same" };
+    const y = { ...it("y", 5, 10), text: "same" };
+    const t = tl(x, [x, y]);
+    expect(t.rows[1].whoId).toBe("y");
+    expect(t.rows[1].who).toBe("same");
+  });
+
+  test("no end time, a negative span, or a live item gives no timeline", () => {
+    expect(tl(it("a", 0, undefined), [])).toBeNull();
+    expect(tl(it("a", 10, 5), [])).toBeNull();
+    expect(tl(it("a", 0, 10, false), [])).toBeNull();
+  });
+
+  test("a clock-skewed item above that ends before it begins adds nothing", () => {
+    const x = it("x", 0, 30);
+    const y = it("y", 20, 10);
+    expect(kinds(tl(x, [x, y]))).toEqual(["pushed", "popped"]);
+    expect(tl(x, [x, y]).onTop).toBe(30 * MIN);
+  });
+});
+
+describe("timeline agrees with timeOnTop and with a brute-force oracle", () => {
+  // A seeded generator, so a failure can be reproduced.
+  const rng = (seed) => () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+  function simulate(seed) {
+    const r = rng(seed);
+    const items = [];
+    const stack = [];
+    let t = 100;
+    let lastPush = 0;
+    const n = 4 + Math.floor(r() * 30);
+    for (let i = 0; i < n; i++) {
+      t += r() < 0.2 ? 0 : 1 + Math.floor(r() * 6);
+      const roll = r();
+      if (roll < 0.5 || !stack.length) {
+        t = Math.max(t, lastPush + 1);
+        const x = { id: "i" + i, text: "t" + i, ts: t, at: t, removed: false };
+        lastPush = t;
+        items.push(x);
+        stack.push(x);
+      } else if (roll < 0.8) {
+        const x = stack.pop();
+        x.removed = true;
+        x.at = t;
+      } else {
+        const x = stack.splice(Math.floor(r() * stack.length), 1)[0]; // dropped from anywhere
+        x.removed = true;
+        x.at = t;
+      }
+    }
+    return items;
+  }
+  // Independent: at every unit of time, the top is the live item with the greatest push time.
+  function oracle(x, items) {
+    let n = 0;
+    for (let u = x.ts; u < x.at; u++) {
+      let top = null;
+      for (const y of items) if (y.ts <= u && (!y.removed || u < y.at) && (!top || y.ts > top.ts)) top = y;
+      if (top === x) n++;
+    }
+    return n;
+  }
+
+  test("over 400 generated stacks", () => {
+    let checked = 0;
+    for (let seed = 1; seed <= 400; seed++) {
+      const items = simulate(seed);
+      for (const x of items.filter((i) => i.removed)) {
+        const t = timeline(x, items);
+        const msg = `seed ${seed} item ${x.id}`;
+        expect(t, msg).not.toBeNull();
+        expect(t.onTop, msg).toBe(oracle(x, items));
+        expect(timeOnTop(x, items), msg).toBe(t.onTop);
+        expect(t.wall, msg).toBe(x.at - x.ts);
+        const rows = t.rows;
+        expect(rows[0].kind, msg).toBe("pushed");
+        expect(["popped", "dropped"], msg).toContain(rows.at(-1).kind);
+        expect(rows.at(-1).onTop, msg).toBe(t.onTop);
+        expect(rows.at(-1).wall, msg).toBe(t.wall);
+        for (let i = 1; i < rows.length; i++) {
+          expect(rows[i].t, msg).toBeGreaterThanOrEqual(rows[i - 1].t);
+          expect(rows[i].onTop, msg).toBeGreaterThanOrEqual(rows[i - 1].onTop);
+          expect(rows[i].wall, msg).toBeGreaterThanOrEqual(rows[i - 1].wall);
+          expect(rows[i].onTop, msg).toBeLessThanOrEqual(rows[i].wall);
+          // no zero-length pause: a pause is followed by a return strictly later, or by the end
+          if (rows[i - 1].kind === "paused" && rows[i].kind === "back") expect(rows[i].t, msg).toBeGreaterThan(rows[i - 1].t);
+        }
+        const mid = rows.slice(1, -1).map((r) => r.kind);
+        mid.forEach((k, i) => expect(k, msg).toBe(i % 2 === 0 ? "paused" : "back"));
+        checked++;
+      }
+    }
+    expect(checked).toBeGreaterThan(500);
+  });
+});
+
+describe("detailsFor: the words in the panel", () => {
+  const D = at(2026, 11, 19, 9, 0);
+  const m = (n) => D + n * MIN;
+  const mk = (id, text, a, b, removed = true) => ({ id, text, ts: m(a), at: b == null ? undefined : m(b), removed, seq: 1 });
+  const NOWD = at(2026, 11, 19, 15, 0);
+
+  test("the worked example, exactly", () => {
+    const x = mk("x", "Write report", 0, 90);
+    const y = mk("y", "Pay super", 30, 45);
+    const d = detailsFor(x, [x, y], NOWD, "en-US");
+    expect(d.title).toBe("Write report");
+    expect(d.summary).toBe("Started 09:00 \u00b7 Ended 10:30");
+    expect(d.rows).toEqual([
+      { time: "09:00", what: "Pushed", onTop: "0 min", wall: "0 min" },
+      { time: "09:30", what: "Paused: Pay super pushed", onTop: "30 min", wall: "30 min" },
+      { time: "09:45", what: "Back on top: Pay super ended", onTop: "30 min", wall: "45 min" },
+      { time: "10:30", what: "Popped", onTop: "1 h 15 min", wall: "1 h 30 min" },
+    ]);
+  });
+
+  test("dropped from underneath something still on top", () => {
+    const x = mk("x", "Under", 0, 40);
+    const y = mk("y", "Above", 10, undefined, false);
+    const d = detailsFor(x, [x, y], NOWD, "en-US");
+    expect(d.rows.at(-1)).toEqual({ time: "09:40", what: "Dropped: Above still on top", onTop: "10 min", wall: "40 min" });
+  });
+
+  test("an item pushed on an earlier day shows dated times", () => {
+    const x = { id: "x", text: "Old", ts: at(2026, 11, 18, 16, 50), at: at(2026, 11, 19, 9, 0), removed: true };
+    const d = detailsFor(x, [x], NOWD, "en-US");
+    expect(d.summary).toBe("Started Wed 16:50 \u00b7 Ended 09:00");
+    expect(d.rows[0].time).toBe("Wed 16:50");
+    expect(d.rows.at(-1).wall).toBe("16 h 10 min");
+  });
+
+  test("the final On top equals the Done today row's duration", () => {
+    const x = mk("x", "x", 0, 90);
+    const y = mk("y", "y", 30, 45);
+    expect(detailsFor(x, [x, y], NOWD, "en-US").rows.at(-1).onTop).toBe(doneRow(x, [x, y], "en-US", NOWD).duration);
+  });
+
+  test("nothing to show for an item with no end time", () => {
+    expect(detailsFor(mk("x", "x", 0, null), [], NOWD, "en-US")).toBeNull();
   });
 });

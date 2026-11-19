@@ -54,6 +54,22 @@
     </span>
   </div>
 
+  <dialog id="details-dialog" class="details" aria-labelledby="details-title">
+    <div class="details-box">
+      <div class="debug-head">
+        <h2 id="details-title"></h2>
+        <span class="debug-actions"><button type="button" id="details-close">Close</button></span>
+      </div>
+      <p class="details-summary" id="details-summary"></p>
+      <div class="details-scroll">
+        <table class="timeline">
+          <thead><tr><th class="t">Time</th><th class="w">What happened</th><th class="n">On top</th><th class="n">Wall</th></tr></thead>
+          <tbody id="details-rows"></tbody>
+        </table>
+      </div>
+    </div>
+  </dialog>
+
   <dialog id="debug-dialog" aria-labelledby="debug-title">
     <div class="debug-head">
       <h2 id="debug-title"></h2>
