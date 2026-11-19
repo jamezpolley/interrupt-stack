@@ -17,10 +17,7 @@
 <body>
 <main>
   <header>
-    <div>
-      <h1>Interrupt stack</h1>
-      <div class="version" id="version"></div>
-    </div>
+    <h1>Interrupt stack</h1>
     <div class="meta">
       <span id="depth">0 deep</span>
       <span><span id="dot" class="dot"></span><span id="status">Connecting</span></span>
@@ -29,6 +26,8 @@
         <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg>
       </button>
     </div>
+    <div class="version" id="version"></div>
+    <button type="button" class="pill" id="pane-pill" aria-controls="pane-queue"></button>
   </header>
 
   <p class="note" id="note" hidden></p>
@@ -70,9 +69,6 @@
 
   <div class="board" id="board">
     <section class="pane" id="pane-stack" aria-label="Stack">
-      <div class="pane-nav">
-        <button type="button" class="pane-tab" id="to-queue" aria-controls="pane-queue"></button>
-      </div>
       <form id="push-form" autocomplete="off">
         <input type="text" id="push-input" maxlength="200" placeholder="What are you starting now?" aria-label="New task to push onto the stack">
         <span class="split">
@@ -92,9 +88,6 @@
     </section>
 
     <section class="pane" id="pane-queue" data-queue-aria>
-      <div class="pane-nav">
-        <button type="button" class="pane-tab" id="to-stack" aria-controls="pane-stack">&lsaquo; Stack</button>
-      </div>
       <form id="queue-form" autocomplete="off">
         <input type="text" id="queue-input" maxlength="200">
         <button type="submit" class="add" id="queue-add"></button>

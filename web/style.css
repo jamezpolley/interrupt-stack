@@ -54,7 +54,11 @@ main{
   padding-right:max(16px,env(safe-area-inset-right,0px));
   display:flex;flex-direction:column;gap:20px;
 }
-header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+header{display:grid;grid-template-columns:minmax(10.5rem,1fr) minmax(0,auto);grid-template-areas:"title meta" "version pill";align-items:baseline;column-gap:12px;row-gap:2px}
+header h1{grid-area:title}
+header .meta{grid-area:meta;flex-wrap:wrap;justify-content:flex-end;min-width:0}
+header .version{grid-area:version;min-width:0;overflow-wrap:anywhere}
+header .pill{grid-area:pill;justify-self:end}
 h1{margin:0;font-size:1.25rem;font-weight:600;text-wrap:balance}
 .version{font-family:var(--font-mono);font-size:.6875rem;color:var(--muted);opacity:.7;margin-top:2px}
 .meta{font-family:var(--font-mono);font-size:.8125rem;color:var(--muted);display:flex;gap:12px;align-items:center}
@@ -149,9 +153,9 @@ dialog::backdrop{background:rgba(0,0,0,.5)}
 .board{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;overscroll-behavior-x:contain;scrollbar-width:none;gap:24px;margin:0 -16px;padding:0 16px;scroll-padding:0 16px}
 .board::-webkit-scrollbar{display:none}
 .pane{flex:0 0 100%;scroll-snap-align:start;scroll-snap-stop:always;min-width:0;display:flex;flex-direction:column;gap:20px;align-self:flex-start}
-.pane-nav{display:flex}
-#pane-stack .pane-nav{justify-content:flex-end}
-.pane-tab{min-height:36px;padding:4px 12px;font-size:.8125rem;border-color:var(--accent);color:var(--accent)}
+/* The header pill moves between the panes. Small to look at, 44px to hit: the ::before extends the tap area. */
+.pill{position:relative;min-height:0;height:28px;padding:0 12px;font-size:.8125rem;line-height:1;border-color:var(--accent);color:var(--accent);border-radius:14px;white-space:nowrap;align-self:center}
+.pill::before{content:"";position:absolute;inset:-9px -7px}
 #queue-form input{flex:1 1 10rem}
 button.add{border-color:var(--accent);color:var(--accent)}
 .queue-empty{margin:0}
@@ -159,5 +163,5 @@ button.add{border-color:var(--accent);color:var(--accent)}
 @media (min-width:700px){
   .board{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);overflow:visible;margin:0;padding:0;gap:24px;scroll-snap-type:none}
   .pane{align-self:start}
-  .pane-nav{display:none}
+  .pill{display:none}
 }

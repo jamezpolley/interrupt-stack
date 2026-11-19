@@ -1,6 +1,7 @@
 import { createSync } from "./sync.js";
 import { openStorage, QUEUE_DB_NAME } from "./idb.js";
 import { createQueue, QUEUE_LABEL } from "./queue.js";
+import { currentPane, pillFor } from "./pane.js";
 import { createEventStream } from "./events.js";
 import { canUpdateNow, describeServerUpdate, forceRefresh, readVersionInfo, requestServerCheck, updateServerNow } from "./refresh.js";
 import { completedToday } from "./today.js";
@@ -165,7 +166,7 @@ function render() {
 
 function renderQueue() {
   const items = queue ? queue.queue() : [];
-  $("to-queue").textContent = items.length ? `${QUEUE_LABEL} ${items.length} \u203a` : `${QUEUE_LABEL} \u203a`;
+  updatePill(items.length);
   $("queue-empty").hidden = items.length > 0;
   const list = $("queue");
   list.textContent = "";
@@ -204,11 +205,26 @@ function labelQueue() {
   $("queue-add").textContent = "Add";
   $("queue-add").setAttribute("aria-label", `Add to ${name}`);
   $("queue-empty").textContent = `Nothing in ${name}.`;
-  $("to-queue").setAttribute("aria-label", `Show ${name}`);
-  $("to-stack").setAttribute("aria-label", "Show the stack");
 }
 
-// On a phone the panes sit side by side and scroll sideways; the edge tabs do the same as a swipe.
+// The header pill points at the other pane, so its words depend on which one is showing (a swipe changes that).
+let laterCount = 0;
+function updatePill(count = laterCount) {
+  laterCount = count;
+  let pane = "stack";
+  try {
+    const board = $("board");
+    pane = currentPane(board.scrollLeft, board.clientWidth);
+  } catch {}
+  const pill = pillFor({ pane, count, label: QUEUE_LABEL });
+  const el = $("pane-pill");
+  el.textContent = pill.text;
+  el.setAttribute("aria-label", pill.aria);
+  el.setAttribute("aria-controls", pill.target === "queue" ? "pane-queue" : "pane-stack");
+  el.dataset.target = pill.target;
+}
+
+// On a phone the panes sit side by side and scroll sideways; the header pill does the same as a swipe.
 function showPane(id) {
   const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
   $(id).scrollIntoView({ behavior: reduce ? "auto" : "smooth", inline: "start", block: "nearest" });
@@ -391,8 +407,13 @@ async function init() {
     if (!item) inp.value = text;
     inp.focus();
   });
-  $("to-queue").addEventListener("click", () => showPane("pane-queue"));
-  $("to-stack").addEventListener("click", () => showPane("pane-stack"));
+  $("pane-pill").addEventListener("click", () => showPane($("pane-pill").dataset.target === "queue" ? "pane-queue" : "pane-stack"));
+  let paneFrame = 0;
+  $("board").addEventListener("scroll", () => {
+    cancelAnimationFrame(paneFrame);
+    paneFrame = requestAnimationFrame(() => updatePill());
+  }, { passive: true });
+  addEventListener("resize", () => updatePill());
   $("undo-btn").addEventListener("click", undo);
   $("debug-btn").addEventListener("click", () => {
     const f = sync.lastFailure();
