@@ -13,6 +13,7 @@ const SHELL = [
   "refresh.js",
   "today.js",
   "install.js",
+  "status-text.js",
   "config.js",
   "version.js",
   "style.css",

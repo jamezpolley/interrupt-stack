@@ -3,6 +3,7 @@ import { openStorage } from "./idb.js";
 import { createEventStream } from "./events.js";
 import { canUpdateNow, describeServerUpdate, forceRefresh, readVersionInfo, requestServerCheck, updateServerNow } from "./refresh.js";
 import { completedToday } from "./today.js";
+import { statusLabel } from "./status-text.js";
 import { LOCAL_ONLY } from "./config.js";
 import { startInstallPrompt } from "./install.js";
 
@@ -32,19 +33,8 @@ function showNote(text) {
 const STORAGE_NOTE = "This device could not save your changes locally. Keep this page open until they sync.";
 let storageNoteShown = false;
 
-function renderStatus({ state, pending, storageFailed }) {
-  const label =
-    state === "local"
-      ? "Local only"
-      : state === "synced"
-      ? "Synced"
-      : state === "syncing"
-        ? "Syncing"
-        : state === "error"
-          ? `Sync problem, ${pending} unsent`
-          : pending
-            ? `Offline, ${pending} unsent`
-            : "Offline";
+function renderStatus({ state, pending, storageFailed, error }) {
+  const label = statusLabel({ state, pending, error });
   $("status").textContent = label;
   $("dot").className = "dot" + (state === "synced" ? " ok" : state === "offline" || state === "error" ? " warn" : "");
   if (storageFailed && !storageNoteShown) showNote(STORAGE_NOTE);
@@ -261,7 +251,7 @@ async function init() {
     showNote("This browser would not open local storage, so the stack cannot be kept. Try a normal (non-private) window.");
     return;
   }
-  sync = createSync({ storage, fetch: (p, i) => fetch(p, i), onChange: render, onStatus: renderStatus, local: LOCAL_ONLY });
+  sync = createSync({ storage, fetch: (p, i) => fetch(p, i), onChange: render, onStatus: renderStatus, online: () => navigator.onLine, local: LOCAL_ONLY });
   render();
 
   $("push-form").addEventListener("submit", async (ev) => {
