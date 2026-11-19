@@ -51,7 +51,15 @@ function combinedStatus() {
     ...(st.neverSynced ? { neverSynced: true } : {}),
   };
 }
-const updateStatus = () => renderStatus(combinedStatus());
+// When only the Later sync has just failed, have the stack try too: it knows how to name a failure (and keeps the
+// detail the Debug link shows), and both use the same network, so it will normally fail for the same reason.
+let queueWasOffline = false;
+function updateStatus() {
+  const q = queue?.status().state === "offline";
+  if (q && !queueWasOffline && sync.status().state === "synced") sync.syncNow().catch(() => {});
+  queueWasOffline = q;
+  renderStatus(combinedStatus());
+}
 
 // An empty stack on a device that has never reached the server may just mean nothing has arrived yet.
 let showingNeverSynced = false;
