@@ -3,7 +3,15 @@ import { Database } from "bun:sqlite";
 /** `at` is the device's clock when the item last changed state (equal to `ts` for a fresh push). */
 export type Item = { id: string; text: string; ts: number; at: number; removed: boolean; seq: number };
 export type ItemInput = { text: string; ts: number; removed: boolean; at?: number };
-export type LogEvent = { n: number; ts: number; at: number; op: "push" | "pop" | "restore"; id: string; text: string };
+export type LogEvent = { n: number; ts: number; at: number; op: "push" | "pop" | "restore" | "queue" | "dequeue" | "requeue" | "start"; id: string; text: string };
+
+/**
+ * The queue is a pile of things to do later, kept apart from the stack: its own table, its own `seq` numbering and
+ * its own API, so an old client that knows nothing of it never sees it. A removed row is a tombstone; `started` says
+ * it was removed because it was started (pushed onto the stack as `s-` plus the rest of its id), not dropped.
+ */
+export type QueueItem = { id: string; text: string; ts: number; at: number; removed: boolean; started: boolean; seq: number };
+export type QueueInput = { text: string; ts: number; removed: boolean; started?: boolean; at?: number };
 
 export class ValidationError extends Error {
   constructor(message: string) {
@@ -14,6 +22,7 @@ export class ValidationError extends Error {
 
 export const MAX_TEXT = 200;
 const ID_RE = /^s-[a-z0-9]{4,40}$/;
+const QUEUE_ID_RE = /^q-[a-z0-9]{4,40}$/;
 
 export interface Store {
   /** Identifies this database. A client that sees it change knows the server's data was replaced. */
@@ -23,8 +32,14 @@ export interface Store {
   counts(): { live: number; removed: number };
   /** Every push, pop and restore the server has seen, oldest first. */
   log(): LogEvent[];
+  upsertQueue(id: string, input: QueueInput): QueueItem;
+  queueSince(seq: number): { seq: number; items: QueueItem[] };
+  queueCounts(): { queued: number; removed: number };
   close(): void;
 }
+
+type QueueRow = { id: string; text: string; ts: number; at: number; removed: number; started: number; seq: number };
+const toQueueItem = (r: QueueRow): QueueItem => ({ id: r.id, text: r.text, ts: r.ts, at: r.at, removed: r.removed === 1, started: r.started === 1, seq: r.seq });
 
 type Row = { id: string; text: string; ts: number; at: number | null; removed: number; seq: number };
 const toItem = (r: Row): Item => ({ id: r.id, text: r.text, ts: r.ts, at: r.at ?? r.ts, removed: r.removed === 1, seq: r.seq });
@@ -43,6 +58,10 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
     "CREATE TABLE IF NOT EXISTS events (n INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, at INTEGER NOT NULL, op TEXT NOT NULL, id TEXT NOT NULL, text TEXT NOT NULL)",
   );
   db.run("CREATE INDEX IF NOT EXISTS items_seq ON items (seq)");
+  db.run(
+    "CREATE TABLE IF NOT EXISTS queue (id TEXT PRIMARY KEY, text TEXT NOT NULL, ts INTEGER NOT NULL, at INTEGER NOT NULL, removed INTEGER NOT NULL, started INTEGER NOT NULL, seq INTEGER NOT NULL)",
+  );
+  db.run("CREATE INDEX IF NOT EXISTS queue_seq ON queue (seq)");
   db.run("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
   const savedEpoch = db.prepare("SELECT value FROM meta WHERE key = 'epoch'").get() as { value: string } | null;
   const epoch = savedEpoch?.value ?? crypto.randomUUID();
@@ -100,8 +119,74 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
     return saved;
   });
 
+  const QCOLS = "id, text, ts, at, removed, started, seq";
+  const writeQueue = db.prepare(
+    `INSERT INTO queue (id, text, ts, at, removed, started, seq)
+     VALUES ($id, $text, $ts, $at, $removed, $started, (SELECT COALESCE(MAX(seq), 0) + 1 FROM queue))
+     ON CONFLICT(id) DO UPDATE SET text = $text, ts = $ts, at = $at, removed = $removed, started = $started,
+       seq = (SELECT COALESCE(MAX(seq), 0) + 1 FROM queue)
+     RETURNING ${QCOLS}`,
+  );
+  const findQueue = db.prepare(`SELECT ${QCOLS} FROM queue WHERE id = $id`);
+  const laterQueue = db.prepare(`SELECT ${QCOLS} FROM queue WHERE seq > $seq ORDER BY seq ASC`);
+  const maxQueueSeq = db.prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM queue");
+  const queueTally = db.prepare(
+    "SELECT COALESCE(SUM(removed = 0), 0) AS queued, COALESCE(SUM(removed = 1), 0) AS removed FROM queue",
+  );
+
+  // Same approach as the stack: events are the difference between the stored row and what arrived, written in the
+  // same transaction. A queue row leaves by being dropped (`dequeue`) or started (`start`); the stack row it
+  // becomes has the id `s-` plus the rest of its id and logs its own `push`, so the two events can be joined.
+  const upsertQueueTx = db.transaction((id: string, text: string, ts: number, removed: boolean, started: boolean, at: number | undefined) => {
+    const now = clock();
+    const clamp = (t: number) => Math.max(0, Math.min(t, now));
+    const before = findQueue.get({ $id: id }) as QueueRow | null;
+    const floor = before ? Math.min(before.at, now) : 0;
+    const after = (t: number) => Math.max(clamp(t), floor);
+    const leave: LogEvent["op"] = started ? "start" : "dequeue";
+    const changes: [LogEvent["op"], number][] = [];
+    let itemAt: number;
+    if (!before) {
+      changes.push(["queue", clamp(ts)]);
+      itemAt = clamp(at ?? (removed ? now : ts));
+      if (removed) changes.push([leave, itemAt]);
+    } else if (before.removed === 0 && removed) {
+      itemAt = after(at ?? now);
+      changes.push([leave, itemAt]);
+    } else if (before.removed === 1 && !removed) {
+      itemAt = after(at ?? now);
+      changes.push(["requeue", itemAt]);
+    } else {
+      itemAt = before.at;
+    }
+    const keepStarted = removed && started;
+    const saved = toQueueItem(
+      writeQueue.get({ $id: id, $text: text, $ts: ts, $at: itemAt, $removed: removed ? 1 : 0, $started: keepStarted ? 1 : 0 }) as QueueRow,
+    );
+    for (const [op, when] of changes) record.run({ $ts: now, $at: when, $op: op, $id: id, $text: text });
+    return saved;
+  });
+
   return {
     epoch,
+    upsertQueue(id, input) {
+      if (typeof id !== "string" || !QUEUE_ID_RE.test(id)) throw new ValidationError("invalid id");
+      const text = typeof input.text === "string" ? input.text.trim() : "";
+      if (!text) throw new ValidationError("text is required");
+      if (text.length > MAX_TEXT) throw new ValidationError(`text is over ${MAX_TEXT} characters`);
+      if (!Number.isSafeInteger(input.ts)) throw new ValidationError("ts must be an integer");
+      const at = input.at ?? undefined;
+      if (at !== undefined && !Number.isSafeInteger(at)) throw new ValidationError("at must be an integer");
+      if (input.started !== undefined && typeof input.started !== "boolean") throw new ValidationError("started must be a boolean");
+      return upsertQueueTx.immediate(id, text, input.ts, input.removed === true, input.started === true, at);
+    },
+    queueSince(seq) {
+      const items = (laterQueue.all({ $seq: seq }) as QueueRow[]).map(toQueueItem);
+      return { seq: (maxQueueSeq.get() as { seq: number }).seq, items };
+    },
+    queueCounts() {
+      return queueTally.get() as { queued: number; removed: number };
+    },
     upsert(id, input) {
       if (typeof id !== "string" || !ID_RE.test(id)) throw new ValidationError("invalid id");
       const text = typeof input.text === "string" ? input.text.trim() : "";

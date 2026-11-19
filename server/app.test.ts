@@ -412,3 +412,70 @@ describe("update now (restart to apply an update)", () => {
     expect(await (await a.fetch(new Request("http://t/metrics"))).text()).toContain('route="/api/update",method="POST",code="409"');
   });
 });
+
+describe("queue api", () => {
+  const putQ = (id: string, body: unknown) =>
+    app.fetch(new Request(`http://t/api/queue/${id}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }));
+  const qitem = (text = "later", ts = 100, removed = false, started?: boolean) => ({ text, ts, removed, ...(started === undefined ? {} : { started }) });
+
+  test("PUT /api/queue/:id then GET /api/queue returns it with its own seq and the epoch", async () => {
+    const res = await putQ("q-aaaa", qitem("later", 7));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id: "q-aaaa", text: "later", ts: 7, at: 7, removed: false, started: false, seq: 1 });
+    const list = await (await get("/api/queue?since=0")).json();
+    expect(list.seq).toBe(1);
+    expect(list.epoch).toBe(store.epoch);
+    expect(list.items).toHaveLength(1);
+    expect((await (await get("/api/queue?since=1")).json()).items).toEqual([]);
+  });
+
+  test("old clients see no queue items: /api/items and its stream are untouched", async () => {
+    await put("s-aaaa", item("stack", 1));
+    await putQ("q-aaaa", qitem("later", 2));
+    await putQ("q-bbbb", qitem("later two", 3));
+    const list = await (await get("/api/items?since=0")).json();
+    expect(list).toEqual({ seq: 1, epoch: store.epoch, items: [{ id: "s-aaaa", text: "stack", ts: 1, at: 1, removed: false, seq: 1 }] });
+    // An old client sends the old body shape and it still works; unknown fields are ignored.
+    expect((await put("s-cccc", { text: "x", ts: 5, removed: false })).status).toBe(200);
+    expect((await put("s-dddd", { text: "x", ts: 5, removed: false, queued: true })).status).toBe(200);
+    const after = await (await get("/api/items?since=0")).json();
+    expect(after.items.map((i: any) => i.id)).toEqual(["s-aaaa", "s-cccc", "s-dddd"]);
+    expect(after.items.every((i: any) => !("queued" in i))).toBe(true);
+    // A queue id is not accepted on the stack route.
+    expect((await put("q-aaaa", item())).status).toBe(400);
+  });
+
+  test("the stack seq stream stays stack-only; queue changes send their own qseq event", async () => {
+    await put("s-aaaa", item());
+    const res = await get("/api/events");
+    const reader = res.body!.getReader();
+    const dec = new TextDecoder();
+    const next = async () => dec.decode((await reader.read()).value);
+    expect(await next()).toBe("event: seq\ndata: 1\n\n");
+    await putQ("q-aaaa", qitem());
+    expect(await next()).toBe("event: qseq\ndata: 1\n\n");
+    await put("s-bbbb", item());
+    expect(await next()).toBe("event: seq\ndata: 2\n\n");
+    await reader.cancel();
+  });
+
+  test("queue validation errors are 400", async () => {
+    expect((await putQ("q-aaaa", qitem("x".repeat(201)))).status).toBe(400);
+    expect((await putQ("q-aaaa", { text: "", ts: 1 })).status).toBe(400);
+    expect((await putQ("q-aaaa", { text: "x", ts: 1, started: "yes" })).status).toBe(400);
+  });
+
+  test("metrics: live is the stack only; the queue has its own gauge", async () => {
+    await put("s-aaaa", item());
+    await putQ("q-aaaa", qitem());
+    await putQ("q-bbbb", qitem("b", 1, true));
+    await putQ("q-cccc", qitem("c", 1, true, true));
+    const text = await (await get("/metrics")).text();
+    expect(text).toContain('interrupt_stack_items{state="live"} 1\n');
+    expect(text).toContain('interrupt_stack_items{state="removed"} 0\n');
+    expect(text).not.toContain('interrupt_stack_items{state="queued"');
+    expect(text).toContain('interrupt_stack_queue_items{state="queued"} 1\n');
+    expect(text).toContain('interrupt_stack_queue_items{state="removed"} 2\n');
+    expect(text).toContain('route="/api/queue/:id"');
+  });
+});

@@ -299,3 +299,84 @@ describe("event log", () => {
     }
   });
 });
+
+describe("queue store", () => {
+  const q = (text = "later", ts = 1000, removed = false, started = false) => ({ text, ts, removed, started });
+  const clocked = (t: { now: number }) => {
+    const s = openStore(":memory:", { now: () => t.now });
+    open.push(s);
+    return s;
+  };
+  const ops = (s: Store) => s.log().map((e) => [e.op, e.id]);
+
+  test("queue rows are separate from stack items, with their own seq", () => {
+    const s = mem();
+    s.upsert("s-aaaa", input());
+    const row = s.upsertQueue("q-aaaa", q("later", 5));
+    expect(row).toEqual({ id: "q-aaaa", text: "later", ts: 5, at: 5, removed: false, started: false, seq: 1 });
+    expect(s.since(0).items.map((i) => i.id)).toEqual(["s-aaaa"]);
+    expect(s.queueSince(0)).toEqual({ seq: 1, items: [row] });
+    expect(s.queueSince(1).items).toEqual([]);
+  });
+
+  test("a queue id must look like q-...; stack ids are refused", () => {
+    expect(() => mem().upsertQueue("s-aaaa", q())).toThrow(ValidationError);
+    expect(() => mem().upsertQueue("q-!", q())).toThrow(ValidationError);
+    expect(() => mem().upsert("q-aaaa", input())).toThrow(ValidationError);
+    expect(() => mem().upsertQueue("q-aaaa", { ...q(), started: "yes" as any })).toThrow(ValidationError);
+    expect(() => mem().upsertQueue("q-aaaa", q(" "))).toThrow(ValidationError);
+  });
+
+  test("queue events: queue, dequeue (drop), requeue (undo), start", () => {
+    const t = { now: 9000 };
+    const s = clocked(t);
+    s.upsertQueue("q-aaaa", q("a", 1000));
+    s.upsertQueue("q-aaaa", q("a", 1000)); // retry: nothing new
+    t.now = 9100;
+    s.upsertQueue("q-aaaa", { ...q("a", 1000, true), at: 9100 });
+    t.now = 9200;
+    s.upsertQueue("q-aaaa", { ...q("a", 1000, false), at: 9200 });
+    s.upsertQueue("q-bbbb", q("b", 2000));
+    t.now = 9300;
+    s.upsertQueue("q-bbbb", { ...q("b", 2000, true, true), at: 9300 });
+    expect(ops(s)).toEqual([
+      ["queue", "q-aaaa"],
+      ["dequeue", "q-aaaa"],
+      ["requeue", "q-aaaa"],
+      ["queue", "q-bbbb"],
+      ["start", "q-bbbb"],
+    ]);
+    expect(s.log().map((e) => e.at)).toEqual([1000, 9100, 9200, 2000, 9300]);
+  });
+
+  test("a row first seen already dropped logs queue then dequeue; started logs queue then start", () => {
+    const s = clocked({ now: 9000 });
+    s.upsertQueue("q-aaaa", q("a", 1000, true));
+    s.upsertQueue("q-bbbb", q("b", 1000, true, true));
+    expect(ops(s)).toEqual([["queue", "q-aaaa"], ["dequeue", "q-aaaa"], ["queue", "q-bbbb"], ["start", "q-bbbb"]]);
+  });
+
+  test("queue counts and stack counts are independent", () => {
+    const s = mem();
+    s.upsert("s-aaaa", input());
+    s.upsertQueue("q-aaaa", q());
+    s.upsertQueue("q-bbbb", q("b", 1, true));
+    expect(s.counts()).toEqual({ live: 1, removed: 0 });
+    expect(s.queueCounts()).toEqual({ queued: 1, removed: 1 });
+  });
+
+  test("opening a database that already has an items.queued column still works", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ist-q-"));
+    const path = join(dir, "x.db");
+    const raw = new Database(path);
+    raw.run("CREATE TABLE items (id TEXT PRIMARY KEY, text TEXT NOT NULL, ts INTEGER NOT NULL, at INTEGER, removed INTEGER NOT NULL, queued INTEGER NOT NULL DEFAULT 0, seq INTEGER NOT NULL)");
+    raw.run("INSERT INTO items VALUES ('s-aaaa','old',1,1,0,0,1)");
+    raw.close();
+    const s = openStore(path);
+    expect(s.since(0).items.map((i) => i.text)).toEqual(["old"]);
+    expect(s.since(0).items[0]).not.toHaveProperty("queued");
+    s.upsert("s-bbbb", input());
+    s.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
