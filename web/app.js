@@ -5,6 +5,7 @@ import { currentPane, pillFor } from "./pane.js";
 import { createEventStream } from "./events.js";
 import { canUpdateNow, describeServerUpdate, forceRefresh, readVersionInfo, requestServerCheck, updateServerNow } from "./refresh.js";
 import { completedToday } from "./today.js";
+import { doneRow, formatStart } from "./times.js";
 import { formatFailure } from "./debug-text.js";
 import { offersSignIn, shortStatus, statusLabel, statusMessage, unsentWords } from "./status-text.js";
 import { LOCAL_ONLY } from "./config.js";
@@ -17,16 +18,6 @@ let sync;
 let queue;
 let lastRemoved = null; // { it, kind: "stack" | "queue" }
 let undoTimer = null;
-
-function ago(ts) {
-  const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
-  if (s < 60) return "just now";
-  const m = Math.round(s / 60);
-  if (m < 60) return `${m} min ago`;
-  const h = Math.round(m / 60);
-  if (h < 24) return `${h} h ago`;
-  return `${Math.round(h / 24)} d ago`;
-}
 
 function showNote(text) {
   const n = $("note");
@@ -118,7 +109,7 @@ function render() {
     foot.className = "now-foot";
     const a = document.createElement("span");
     a.className = "age";
-    a.textContent = `Pushed ${ago(top.ts)}`;
+    a.textContent = `Pushed ${formatStart(top.ts, Date.now())}`;
     const b = document.createElement("button");
     b.type = "button";
     b.className = "primary";
@@ -131,7 +122,8 @@ function render() {
 
   $("swap-btn").disabled = stack.length === 0;
 
-  const done = completedToday(sync.allItems(), Date.now());
+  const all = sync.allItems();
+  const done = completedToday(all, Date.now());
   const doneList = $("done");
   doneList.textContent = "";
   $("done-wrap").hidden = done.length === 0;
@@ -140,10 +132,14 @@ function render() {
     const tx = document.createElement("span");
     tx.className = "item-text";
     tx.textContent = it.text;
-    const when = document.createElement("span");
-    when.className = "item-age";
-    when.textContent = new Date(it.at ?? it.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    li.append(tx, when);
+    const row = doneRow(it, all);
+    const end = document.createElement("span");
+    end.className = "item-age";
+    end.textContent = row.end;
+    const dur = document.createElement("span");
+    dur.className = "item-age";
+    dur.textContent = row.duration;
+    li.append(tx, end, dur);
     doneList.appendChild(li);
   }
 
@@ -163,7 +159,7 @@ function render() {
     tx.textContent = it.text;
     const ag = document.createElement("span");
     ag.className = "item-age";
-    ag.textContent = ago(it.ts);
+    ag.textContent = formatStart(it.ts, Date.now());
     const x = document.createElement("button");
     x.type = "button";
     x.className = "drop";
