@@ -54,11 +54,14 @@ main{
   padding-right:max(16px,env(safe-area-inset-right,0px));
   display:flex;flex-direction:column;gap:20px;
 }
-header{display:grid;grid-template-columns:minmax(10.5rem,1fr) minmax(0,auto);grid-template-areas:"title meta" "version pill";align-items:baseline;column-gap:12px;row-gap:2px}
-header h1{grid-area:title}
-header .meta{grid-area:meta;flex-wrap:wrap;justify-content:flex-end;min-width:0}
-header .version{grid-area:version;min-width:0;overflow-wrap:anywhere}
-header .pill{grid-area:pill;justify-self:end}
+/* Header: title and status share a row while they fit; a long status (an error, with Debug) drops to a row of its own
+   instead of squeezing the title. Version and the Later pill always share the last row. */
+header{display:flex;flex-wrap:wrap;align-items:baseline;column-gap:12px;row-gap:2px}
+header .meta{margin-left:auto;min-width:0;max-width:100%}
+header .meta #depth,header .meta button{white-space:nowrap;flex:none}
+header .meta>span{min-width:0}
+header .subhead{flex:1 0 100%;display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0}
+header .version{min-width:0;overflow-wrap:anywhere}
 h1{margin:0;font-size:1.25rem;font-weight:600;text-wrap:balance}
 .version{font-family:var(--font-mono);font-size:.6875rem;color:var(--muted);opacity:.7;margin-top:2px}
 .meta{font-family:var(--font-mono);font-size:.8125rem;color:var(--muted);display:flex;gap:12px;align-items:center}
