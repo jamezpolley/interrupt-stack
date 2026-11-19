@@ -3,6 +3,7 @@ import { openStorage } from "./idb.js";
 import { createEventStream } from "./events.js";
 import { canUpdateNow, describeServerUpdate, forceRefresh, readVersionInfo, requestServerCheck, updateServerNow } from "./refresh.js";
 import { completedToday } from "./today.js";
+import { formatFailure } from "./debug-text.js";
 import { statusLabel } from "./status-text.js";
 import { LOCAL_ONLY } from "./config.js";
 import { startInstallPrompt } from "./install.js";
@@ -42,6 +43,7 @@ function renderStatus({ state, pending, storageFailed, error, neverSynced }) {
     showingNeverSynced = unsynced;
     if (sync) render();
   }
+  $("debug-btn").hidden = !(error && sync?.lastFailure());
   const label = statusLabel({ state, pending, error });
   $("status").textContent = label;
   $("dot").className = "dot" + (state === "synced" ? " ok" : state === "offline" || state === "error" ? " warn" : "");
@@ -288,6 +290,24 @@ async function init() {
     inp.focus();
   });
   $("undo-btn").addEventListener("click", undo);
+  $("debug-btn").addEventListener("click", () => {
+    const f = sync.lastFailure();
+    if (!f) return;
+    $("debug-text").textContent = formatFailure(f);
+    $("debug-copy-msg").hidden = true;
+    $("debug-dialog").showModal();
+  });
+  $("debug-close").addEventListener("click", () => $("debug-dialog").close());
+  $("debug-copy").addEventListener("click", async () => {
+    let msg = "Copied.";
+    try {
+      await navigator.clipboard.writeText($("debug-text").textContent);
+    } catch {
+      msg = "Could not copy. Select the text and copy it by hand.";
+    }
+    $("debug-copy-msg").textContent = msg;
+    $("debug-copy-msg").hidden = false;
+  });
   $("refresh-btn").addEventListener("click", refreshApp);
   $("update-btn").addEventListener("click", refreshApp);
   $("update-now-btn").addEventListener("click", updateNow);

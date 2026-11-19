@@ -24,6 +24,7 @@
     <div class="meta">
       <span id="depth">0 deep</span>
       <span><span id="dot" class="dot"></span><span id="status">Connecting</span></span>
+      <button type="button" class="link" id="debug-btn" hidden>Debug</button>
       <button type="button" class="icon" id="refresh-btn" title="Refresh app" aria-label="Refresh app">
         <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg>
       </button>
@@ -59,6 +60,18 @@
   </div>
 
   <section id="now-wrap" aria-live="polite"></section>
+
+  <dialog id="debug-dialog" aria-labelledby="debug-title">
+    <div class="debug-head">
+      <h2 id="debug-title">Last failed call</h2>
+      <span class="debug-actions">
+        <button type="button" id="debug-copy">Copy</button>
+        <button type="button" id="debug-close">Close</button>
+      </span>
+    </div>
+    <pre id="debug-text" tabindex="0"></pre>
+    <p class="quiet-note" id="debug-copy-msg" role="status" hidden></p>
+  </dialog>
 
   <div class="toast" id="toast" hidden>
     <span id="toast-text"></span>
