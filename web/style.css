@@ -130,6 +130,11 @@ button.icon:hover:not(:disabled){border-color:var(--line)}
 .quiet-note{color:var(--muted)}
 .done{display:flex;flex-direction:column;gap:8px}
 .done li{background:transparent;border-style:dashed;color:var(--muted)}
+/* Done today: text, then the time it ended and how long it was on top; the column labels use the same grid. */
+.done li,.done-cols{display:grid;grid-template-columns:minmax(0,1fr) 4rem 5rem;column-gap:12px}
+.done li .item-age,.done-cols span{text-align:right}
+.done-cols{padding:0 13px;margin-bottom:-2px;font-size:.6875rem}
+.done-cols::before{content:""}
 .done .item-text{color:var(--muted)}
 .server-update{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
 .server-update button{min-height:36px;padding:4px 12px;font-size:.8125rem}
