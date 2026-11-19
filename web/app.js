@@ -6,7 +6,7 @@ import { createEventStream } from "./events.js";
 import { canUpdateNow, describeServerUpdate, forceRefresh, readVersionInfo, requestServerCheck, updateServerNow } from "./refresh.js";
 import { completedToday } from "./today.js";
 import { formatFailure } from "./debug-text.js";
-import { statusLabel } from "./status-text.js";
+import { shortStatus, statusLabel, statusMessage, unsentWords } from "./status-text.js";
 import { LOCAL_ONLY } from "./config.js";
 import { startInstallPrompt } from "./install.js";
 
@@ -38,7 +38,7 @@ const STORAGE_NOTE = "This device could not save your changes locally. Keep this
 let storageNoteShown = false;
 
 // One line for both structures: the worst state of the two, and every unsent change counted. The failure kind (and
-// so the Debug link) comes from the stack, which records it; a failure only the Later sync has shows as plain
+// so the status button) comes from the stack, which records it; a failure only the Later sync has shows as plain
 // "Offline" / "Sync problem".
 function combinedStatus() {
   const st = sync.status();
@@ -71,9 +71,20 @@ function renderStatus({ state, pending, storageFailed, error, neverSynced }) {
     showingNeverSynced = unsynced;
     if (sync) render();
   }
-  $("debug-btn").hidden = !(error && sync?.lastFailure());
-  const label = statusLabel({ state, pending, error });
-  $("status").textContent = label;
+  // A named failure shows as a button that opens the Debug panel; anything else is plain text. Unsent changes show as a count.
+  const trouble = state === "offline" || state === "error";
+  const failed = trouble && !!error && !!sync?.lastFailure();
+  const word = shortStatus({ state, pending, error });
+  const showCount = trouble && pending > 0;
+  $("status-btn").hidden = !failed;
+  $("status-plain").hidden = failed;
+  $("status").textContent = word;
+  $("status-count-plain").hidden = !showCount || failed;
+  $("status-count-plain").textContent = String(pending);
+  $("status-word").textContent = word;
+  $("status-count").hidden = !showCount;
+  $("status-count").textContent = String(pending);
+  $("status-btn").setAttribute("aria-label", `${statusLabel({ state, pending, error })}. Show details`);
   $("dot").className = "dot" + (state === "synced" ? " ok" : state === "offline" || state === "error" ? " warn" : "");
   if (storageFailed && !storageNoteShown) showNote(STORAGE_NOTE);
   if (!storageFailed && storageNoteShown) showNote("");
@@ -415,9 +426,14 @@ async function init() {
   }, { passive: true });
   addEventListener("resize", () => updatePill());
   $("undo-btn").addEventListener("click", undo);
-  $("debug-btn").addEventListener("click", () => {
+  $("status-btn").addEventListener("click", () => {
     const f = sync.lastFailure();
     if (!f) return;
+    const st = combinedStatus();
+    $("debug-title").textContent = statusMessage(st);
+    const unsent = unsentWords(st.pending);
+    $("debug-unsent").textContent = unsent;
+    $("debug-unsent").hidden = !unsent;
     $("debug-text").textContent = formatFailure(f);
     $("debug-copy-msg").hidden = true;
     $("debug-dialog").showModal();
