@@ -132,7 +132,7 @@ export function createSync({ storage, fetch, now = () => Date.now(), online = ()
           ...init,
           method: "PUT",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ text: sent.text, ts: sent.ts, removed: sent.removed, at: sent.at, ...(sent.origin ? { origin: sent.origin } : {}) }),
+          body: JSON.stringify({ text: sent.text, ts: sent.ts, removed: sent.removed, at: sent.at, ...(sent.origin ? { origin: sent.origin } : {}), ...(sent.pendingEdit ? { edit: true } : {}) }),
         });
         if (!wantsSignIn(res) && permanentlyRejected(res.status)) {
           if (!rejected.size) lastFailure = { at: now(), request: req, online: online(), response: await describeResponse(res) };
@@ -277,6 +277,28 @@ export function createSync({ storage, fetch, now = () => Date.now(), online = ()
     async restore(id) {
       const it = items.get(id);
       if (it && it.removed) await setItem({ ...it, removed: false, at: now() });
+    },
+
+    /**
+     * Corrects a finished item: `fields` may hold text, ts (when it was pushed) and at (when it ended). Anything not
+     * valid is ignored, and an item still on the stack is not editable. The copy is marked `pendingEdit` until the
+     * server acknowledges it, and is sent as an edit, so the server takes the new text and times instead of treating
+     * the write as a stale copy. `edited_at` is set here too, so the "edited" mark shows at once and offline; the
+     * server's own value replaces it on acknowledgement.
+     */
+    async edit(id, fields = {}) {
+      const it = items.get(id);
+      if (!it || !it.removed) return null;
+      const next = { ...it };
+      const text = typeof fields.text === "string" ? fields.text.trim() : "";
+      if (text && text.length <= 200) next.text = text;
+      if (Number.isFinite(fields.ts)) next.ts = fields.ts;
+      if (Number.isFinite(fields.at)) next.at = fields.at;
+      if (next.text === it.text && next.ts === it.ts && next.at === it.at) return null;
+      next.edited_at = now();
+      if (!local) next.pendingEdit = true;
+      await setItem(next);
+      return next;
     },
 
     syncNow,
