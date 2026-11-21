@@ -94,6 +94,14 @@ export const clockText = (ms) => {
 /** "YYYY-MM-DD" in local time, for a date input. */
 export const dateText = (ms) => `${new Date(ms).getFullYear()}-${pad(new Date(ms).getMonth() + 1)}-${pad(new Date(ms).getDate())}`;
 
+/** "YYYY-MM-DD" moved by `n` calendar days (local time, so month, year and DST edges just work). Null for a bad date. */
+export function shiftDate(date, n) {
+  const d = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!d) return null;
+  const out = new Date(+d[1], +d[2] - 1, +d[3] + n);
+  return Number.isFinite(out.getTime()) ? dateText(out.getTime()) : null;
+}
+
 /**
  * A new time from what was typed: "HH:MM" or "HH:MM:SS" (24 hour), on `date` (default: the original's day).
  * Seconds are optional: left out, the original seconds (and milliseconds) are kept, even when the minute changes.

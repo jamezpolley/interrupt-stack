@@ -6,7 +6,7 @@ import { createEventStream } from "./events.js";
 import { canUpdateNow, describeServerUpdate, forceRefresh, readVersionInfo, requestServerCheck, updateServerNow } from "./refresh.js";
 import { completedToday } from "./today.js";
 import { describeRow, doneRow, formatClock, formatStart, timeline, totalText, wasEdited } from "./times.js";
-import { applyDraft, changesFrom, clockText, dateText, parseEdited, rowTargets, sideEffectText, sideEffects, validateDraft } from "./edit.js";
+import { applyDraft, changesFrom, clockText, dateText, parseEdited, shiftDate, rowTargets, sideEffectText, sideEffects, validateDraft } from "./edit.js";
 import { pushAgain } from "./again.js";
 import { displayText, renderLinked } from "./links.js";
 import { formatFailure } from "./debug-text.js";
@@ -350,18 +350,32 @@ function renderDetails() {
       clock.value = clockText(r.t);
       clock.setAttribute("aria-label", `${tg.field === "ts" ? "Pushed" : "Ended"} time, 24 hour, HH:MM or HH:MM:SS, for ${displayText(owner.text)}`);
       tdT.appendChild(clock);
-      let day = null;
-      if (dateText(orig) !== dateText(now) || dateText(r.t) !== dateText(now)) {
-        day = document.createElement("input");
-        day.className = "day";
-        day.type = "date";
-        day.max = dateText(now);
-        day.value = dateText(r.t);
-        day.setAttribute("aria-label", "Date");
-        tdT.appendChild(day);
-      }
+      // Skinny -1 / +1 day buttons (no date box); +1 is off once the row is on today.
+      const days = document.createElement("div");
+      days.className = "days";
+      const mk = (label, step, aria) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "daybtn";
+        b.textContent = label;
+        b.setAttribute("aria-label", aria);
+        b.addEventListener("mousedown", (e) => e.preventDefault()); // keep focus, so a half-typed clock is not re-rendered away
+        b.addEventListener("click", () => {
+          const ms = parseEdited(orig, clock.value, shiftDate(dateText(r.t), step));
+          clock.classList.toggle("bad", ms === null);
+          if (ms === null) return;
+          if (ms === orig) delete ed.draft.times[key];
+          else ed.draft.times[key] = ms;
+          renderDetails();
+        });
+        return b;
+      };
+      const next = mk("+1 day", 1, "One day later");
+      next.disabled = dateText(r.t) >= dateText(now);
+      days.append(mk("\u22121 day", -1, "One day earlier"), next);
+      tdT.appendChild(days);
       const apply = () => {
-        const ms = parseEdited(orig, clock.value, day ? day.value : dateText(orig));
+        const ms = parseEdited(orig, clock.value, dateText(r.t));
         clock.classList.toggle("bad", ms === null);
         if (ms === null) return false;
         if (ms === orig) delete ed.draft.times[key];
@@ -370,7 +384,6 @@ function renderDetails() {
       };
       clock.addEventListener("input", () => apply() && refreshChecks(true));
       clock.addEventListener("change", () => apply() && renderDetails());
-      day?.addEventListener("change", () => apply() && renderDetails());
     } else tdT.textContent = formatStart(r.t, now);
     const tdW = document.createElement("td");
     tdW.className = "w";
