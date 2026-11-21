@@ -5,6 +5,9 @@ import { reportedBase } from "./gitver";
 import type { UpdateState } from "./updatecheck";
 
 const MAX_BODY = 4096;
+// One sync request carries every pending change of a device, so it may be larger than a single-row write.
+const MAX_SYNC_BODY = 256 * 1024;
+const MAX_SYNC_CHANGES = 500;
 const KEEPALIVE_MS = 25_000;
 const enc = new TextEncoder();
 
@@ -48,7 +51,7 @@ export function createApp(
 
   // Route labels come from a fixed set so a scanner hitting random paths cannot grow the metric series.
   function routeLabel(pathname: string): string {
-    if (pathname === "/healthz" || pathname === "/login" || pathname === "/metrics" || pathname === "/api/events" || pathname === "/api/items" || pathname === "/api/queue" || pathname === "/api/version" || pathname === "/api/update-check" || pathname === "/api/update") return pathname;
+    if (pathname === "/healthz" || pathname === "/login" || pathname === "/metrics" || pathname === "/api/events" || pathname === "/api/items" || pathname === "/api/queue" || pathname === "/api/sync" || pathname === "/api/version" || pathname === "/api/update-check" || pathname === "/api/update") return pathname;
     if (/^\/api\/items\/[^/]+$/.test(pathname)) return "/api/items/:id";
     if (/^\/api\/queue\/[^/]+$/.test(pathname)) return "/api/queue/:id";
     return pathname.startsWith("/api/") ? "/api/other" : "static";
@@ -68,7 +71,7 @@ export function createApp(
       `interrupt_stack_queue_items{state="removed"} ${queue.removed}`,
       "# HELP interrupt_stack_seq Highest change sequence number issued.",
       "# TYPE interrupt_stack_seq gauge",
-      `interrupt_stack_seq ${currentSeq()}`,
+      `interrupt_stack_seq ${store.cursor()}`,
       "# HELP interrupt_stack_event_streams Open server-sent event streams.",
       "# TYPE interrupt_stack_event_streams gauge",
       `interrupt_stack_event_streams ${streams.size}`,
@@ -86,30 +89,26 @@ export function createApp(
   }
 
   const currentSeq = () => store.since(Number.MAX_SAFE_INTEGER).seq;
-  const seqEvent = () => enc.encode(`event: seq\ndata: ${currentSeq()}\n\n`);
+  const send = (chunk: Uint8Array) => {
+    for (const c of streams) {
+      try {
+        c.enqueue(chunk);
+      } catch {
+        streams.delete(c);
+      }
+    }
+  };
+  // `sync` is the one event the current client listens to: the shared counter. `seq` (stack) and `qseq` (queue) are
+  // kept for already-cached clients, which sync each table separately, and go out only for the tables that changed.
+  const syncEvent = () => `event: sync\ndata: ${store.cursor()}\n\n`;
+  const openingEvent = () => enc.encode(`event: seq\ndata: ${currentSeq()}\n\n${syncEvent()}`);
 
-  function notify() {
+  function notify(tables: readonly string[] = ["items"]) {
     if (!streams.size) return;
-    const chunk = seqEvent();
-    for (const c of streams) {
-      try {
-        c.enqueue(chunk);
-      } catch {
-        streams.delete(c);
-      }
-    }
-  }
-
-  // The queue announces itself on its own event name, so a client that only listens for `seq` never hears of it.
-  function notifyQueue() {
-    const chunk = enc.encode(`event: qseq\ndata: ${store.queueSince(Number.MAX_SAFE_INTEGER).seq}\n\n`);
-    for (const c of streams) {
-      try {
-        c.enqueue(chunk);
-      } catch {
-        streams.delete(c);
-      }
-    }
+    const parts = [];
+    if (tables.includes("items")) parts.push(`event: seq\ndata: ${currentSeq()}\n\n`);
+    if (tables.includes("queue")) parts.push(`event: qseq\ndata: ${store.queueSince(Number.MAX_SAFE_INTEGER).seq}\n\n`);
+    send(enc.encode(parts.join("") + syncEvent()));
   }
 
   function events(): Response {
@@ -119,7 +118,7 @@ export function createApp(
       start(c) {
         ctl = c;
         streams.add(c);
-        c.enqueue(seqEvent());
+        c.enqueue(openingEvent());
         timer = setInterval(() => {
           try {
             c.enqueue(enc.encode(": keep-alive\n\n"));
@@ -139,11 +138,11 @@ export function createApp(
     });
   }
 
-  async function readBody(req: Request): Promise<{ data: any } | { error: Response }> {
+  async function readBody(req: Request, max = MAX_BODY): Promise<{ data: any } | { error: Response }> {
     const declared = Number(req.headers.get("content-length") ?? 0);
-    if (declared > MAX_BODY) return { error: json({ error: "body too large" }, 413) };
+    if (declared > max) return { error: json({ error: "body too large" }, 413) };
     const raw = await req.text();
-    if (enc.encode(raw).length > MAX_BODY) return { error: json({ error: "body too large" }, 413) };
+    if (enc.encode(raw).length > max) return { error: json({ error: "body too large" }, 413) };
     let data: any;
     try {
       data = JSON.parse(raw);
@@ -160,8 +159,29 @@ export function createApp(
     const { data } = body;
     try {
       const row = store.upsertQueue(id, { text: data.text, ts: data.ts, removed: data.removed === true, at: data.at, started: data.started });
-      notifyQueue();
+      notify(["queue"]);
       return json(row);
+    } catch (e) {
+      if (e instanceof ValidationError) return json({ error: e.message }, 400);
+      throw e;
+    }
+  }
+
+  // The one sync call: apply this device's pending changes to every table, answer with everything above its cursor.
+  async function postSync(req: Request): Promise<Response> {
+    const body = await readBody(req, MAX_SYNC_BODY);
+    if ("error" in body) return body.error;
+    const { data } = body;
+    const changes = data.changes ?? {};
+    if (Array.isArray(data) || changes === null || typeof changes !== "object" || Array.isArray(changes)) return json({ error: "changes must be an object" }, 400);
+    let count = 0;
+    for (const rows of Object.values(changes)) if (rows !== null && typeof rows === "object") count += Object.keys(rows).length;
+    if (count > MAX_SYNC_CHANGES) return json({ error: "too many changes" }, 413);
+    const cursor = Number.isSafeInteger(data.cursor) && data.cursor > 0 ? data.cursor : 0;
+    try {
+      const { touched, ...result } = store.sync(cursor, changes);
+      if (touched.length) notify(touched);
+      return json({ epoch: store.epoch, ...result });
     } catch (e) {
       if (e instanceof ValidationError) return json({ error: e.message }, 400);
       throw e;
@@ -174,7 +194,7 @@ export function createApp(
     const { data } = body;
     try {
       const item = store.upsert(id, { text: data.text, ts: data.ts, removed: data.removed === true, at: data.at, origin: data.origin, edit: data.edit === true });
-      notify();
+      notify(["items"]);
       return json(item);
     } catch (e) {
       if (e instanceof ValidationError) return json({ error: e.message }, 400);
@@ -217,6 +237,7 @@ export function createApp(
       return new Response(metricsText(), { headers: { "content-type": "text/plain; version=0.0.4; charset=utf-8" } });
     }
     if (pathname === "/api/events" && req.method === "GET") return events();
+    if (pathname === "/api/sync" && req.method === "POST") return postSync(req);
     if (pathname === "/api/items" && req.method === "GET") {
       const n = Number(url.searchParams.get("since"));
       return json({ ...store.since(Number.isSafeInteger(n) && n > 0 ? n : 0), epoch: store.epoch });

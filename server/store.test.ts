@@ -309,14 +309,14 @@ describe("queue store", () => {
   };
   const ops = (s: Store) => s.log().map((e) => [e.op, e.id]);
 
-  test("queue rows are separate from stack items, with their own seq", () => {
+  test("queue rows are separate from stack items, numbered from the counter they share", () => {
     const s = mem();
     s.upsert("s-aaaa", input());
     const row = s.upsertQueue("q-aaaa", q("later", 5));
-    expect(row).toEqual({ id: "q-aaaa", text: "later", ts: 5, at: 5, removed: false, started: false, seq: 1 });
+    expect(row).toEqual({ id: "q-aaaa", text: "later", ts: 5, at: 5, removed: false, started: false, seq: 2 });
     expect(s.since(0).items.map((i) => i.id)).toEqual(["s-aaaa"]);
-    expect(s.queueSince(0)).toEqual({ seq: 1, items: [row] });
-    expect(s.queueSince(1).items).toEqual([]);
+    expect(s.queueSince(0)).toEqual({ seq: 2, items: [row] });
+    expect(s.queueSince(2).items).toEqual([]);
   });
 
   test("a queue id must look like q-...; stack ids are refused", () => {
