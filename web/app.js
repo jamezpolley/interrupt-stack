@@ -7,7 +7,7 @@ import { createEventStream } from "./events.js";
 import { canUpdateNow, describeServerUpdate, forceRefresh, readVersionInfo, requestServerCheck, updateServerNow } from "./refresh.js";
 import { doneTodayEntries } from "./today.js";
 import { describeRow, doneRow, formatClock, formatStart, timeline, totalText, wasEdited } from "./times.js";
-import { applyDraft, changesFrom, clockText, dateText, parseEdited, canShiftLater, shiftRowTime, rowTargets, sideEffectText, sideEffects, validateDraft } from "./edit.js";
+import { applyDraft, changesFrom, clockText, dateText, parseEdited, canShiftLater, noteDayShift, shiftRowTime, rowTargets, sideEffectText, sideEffects, validateDraft } from "./edit.js";
 import { pushAgain } from "./again.js";
 import { displayText, renderLinked } from "./links.js";
 import { formatFailure } from "./debug-text.js";
@@ -215,6 +215,7 @@ function noteRow(n) {
 }
 
 let noteEditing = null; // id of the note whose panel is open
+let noteDayMs = 0; // the day shown in the panel (moved by the day buttons), as a time on that day
 
 function openNote(id) {
   const n = notes.get(id);
@@ -223,17 +224,17 @@ function openNote(id) {
   $("note-text").value = n.text;
   renderLinked($("note-linked"), n.text); // the row is a button, so its links are plain text; here they work
   $("note-time").value = clockText(n.ts);
-  $("note-meta").textContent = dateText(n.ts) === dateText(Date.now()) ? "" : `On ${dateText(n.ts)}. Only the time of day can be changed here.`;
+  noteDayMs = n.ts;
   checkNote();
   $("note-dialog").showModal();
 }
 
-// What the panel would save, or why not. The time keeps the note's own day (the day buttons can come later).
+// What the panel would save, or why not. The time is on the day the day buttons have moved it to.
 function noteDraft() {
   const n = noteEditing && notes.get(noteEditing);
   if (!n) return null;
   const text = $("note-text").value.trim();
-  const ts = parseEdited(n.ts, $("note-time").value);
+  const ts = parseEdited(n.ts, $("note-time").value, dateText(noteDayMs));
   const problems = [];
   if (!text) problems.push("Text cannot be empty.");
   else if (text.length > NOTE_MAX) problems.push(`Text is over ${NOTE_MAX} characters.`);
@@ -246,6 +247,9 @@ function checkNote() {
   const d = noteDraft();
   if (!d) return;
   $("note-time").classList.toggle("bad", d.ts === null);
+  const now = Date.now();
+  $("note-day-next").disabled = !canShiftLater(noteDayMs, now);
+  $("note-meta").textContent = dateText(noteDayMs) === dateText(now) ? "Today" : `On ${dateText(noteDayMs)}`;
   const p = $("note-problems");
   p.hidden = !d.problems.length;
   p.textContent = d.problems.join(" ");
@@ -705,6 +709,17 @@ async function init() {
   $("note-text").addEventListener("input", checkNote);
   $("note-time").addEventListener("input", checkNote);
   $("note-save").addEventListener("click", saveNote);
+  for (const [id, step] of [["note-day-back", -1], ["note-day-next", 1]]) {
+    $(id).addEventListener("click", () => {
+      const n = noteEditing && notes.get(noteEditing);
+      if (!n) return;
+      const ms = noteDayShift(n.ts, $("note-time").value, noteDayMs, step, Date.now());
+      $("note-time").classList.toggle("bad", ms === null);
+      if (ms === null) return;
+      noteDayMs = ms;
+      checkNote();
+    });
+  }
   $("note-close").addEventListener("click", () => $("note-dialog").close());
   $("note-dialog").addEventListener("click", (ev) => {
     if (ev.target === $("note-dialog")) $("note-dialog").close();

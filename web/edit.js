@@ -108,6 +108,9 @@ export const shiftRowTime = (original, clock, currentMs, step) => parseEdited(or
 /** Whether "+1 day" is allowed: only while the row's day is before today (no future dates). */
 export const canShiftLater = (ms, now) => dateText(ms) < dateText(now);
 
+/** A note's time after a day button, or null when the clock is bad or the step would pass today. `dayMs` is the day shown now. */
+export const noteDayShift = (original, clock, dayMs, step, now) => (step > 0 && !canShiftLater(dayMs, now) ? null : shiftRowTime(original, clock, dayMs, step));
+
 /**
  * A new time from what was typed: "HH:MM" or "HH:MM:SS" (24 hour), on `date` (default: the original's day).
  * Seconds are optional: left out, the original seconds (and milliseconds) are kept, even when the minute changes.

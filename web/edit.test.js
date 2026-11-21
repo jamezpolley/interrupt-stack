@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { applyDraft, changesFrom, parseEdited, shiftDate, shiftRowTime, canShiftLater, rowTargets, sideEffects, validateDraft, clockText, dateText } from "./edit.js";
+import { applyDraft, changesFrom, parseEdited, shiftDate, shiftRowTime, canShiftLater, noteDayShift, rowTargets, sideEffects, validateDraft, clockText, dateText } from "./edit.js";
 
 const m = (h, min = 0) => new Date(2026, 10, 19, h, min).getTime();
 const item = (id, ts, at, removed = true, text = id) => ({ id, text, ts, at, removed, seq: 1 });
@@ -153,5 +153,23 @@ describe("canShiftLater", () => {
   test("not on today (or later), yes on earlier days", () => {
     expect(canShiftLater(new Date(2026, 10, 21, 0, 1).getTime(), now)).toBe(false);
     expect(canShiftLater(new Date(2026, 10, 20, 23, 59).getTime(), now)).toBe(true);
+  });
+});
+
+describe("noteDayShift", () => {
+  const now = new Date(2026, 10, 21, 15, 0, 0).getTime();
+  const today = new Date(2026, 10, 21, 13, 3, 30).getTime();
+  const yesterday = new Date(2026, 10, 20, 13, 3, 30).getTime();
+  test("moves a note from today to yesterday, keeping the typed clock", () => {
+    const out = noteDayShift(today, "09:15", today, -1, now);
+    expect(dateText(out)).toBe("2026-11-20");
+    expect(clockText(out)).toBe("09:15:30");
+  });
+  test("moves a note from yesterday to today", () => {
+    expect(dateText(noteDayShift(yesterday, "13:03:30", yesterday, 1, now))).toBe("2026-11-21");
+  });
+  test("never goes past today, and a junk clock is null", () => {
+    expect(noteDayShift(today, "13:03:30", today, 1, now)).toBeNull();
+    expect(noteDayShift(today, "nope", today, -1, now)).toBeNull();
   });
 });
