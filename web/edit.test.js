@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { applyDraft, changesFrom, parseEdited, shiftDate, rowTargets, sideEffects, validateDraft, clockText, dateText } from "./edit.js";
+import { applyDraft, changesFrom, parseEdited, shiftDate, shiftRowTime, canShiftLater, rowTargets, sideEffects, validateDraft, clockText, dateText } from "./edit.js";
 
 const m = (h, min = 0) => new Date(2026, 10, 19, h, min).getTime();
 const item = (id, ts, at, removed = true, text = id) => ({ id, text, ts, at, removed, seq: 1 });
@@ -126,5 +126,32 @@ describe("shiftDate", () => {
   });
   test("a bad date is null", () => {
     expect(shiftDate("nope", 1)).toBeNull();
+  });
+});
+
+describe("shiftRowTime", () => {
+  const now = new Date(2026, 10, 21, 15, 0, 0).getTime();
+  const orig = new Date(2026, 10, 21, 13, 3, 30, 250).getTime();
+  test("moves a time made today to yesterday, keeping the clock", () => {
+    const out = shiftRowTime(orig, "13:03:30", orig, -1);
+    expect(dateText(out)).toBe("2026-11-20");
+    expect(clockText(out)).toBe("13:03:30");
+  });
+  test("uses the typed clock and the current (drafted) day", () => {
+    const drafted = new Date(2026, 10, 20, 13, 3, 30).getTime();
+    const out = shiftRowTime(orig, "09:15", drafted, -1);
+    expect(dateText(out)).toBe("2026-11-19");
+    expect(clockText(out)).toBe("09:15:30");
+  });
+  test("a junk clock is null", () => {
+    expect(shiftRowTime(orig, "nope", orig, -1)).toBeNull();
+  });
+});
+
+describe("canShiftLater", () => {
+  const now = new Date(2026, 10, 21, 0, 5, 0).getTime();
+  test("not on today (or later), yes on earlier days", () => {
+    expect(canShiftLater(new Date(2026, 10, 21, 0, 1).getTime(), now)).toBe(false);
+    expect(canShiftLater(new Date(2026, 10, 20, 23, 59).getTime(), now)).toBe(true);
   });
 });

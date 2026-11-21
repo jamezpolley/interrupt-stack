@@ -6,7 +6,7 @@ import { createEventStream } from "./events.js";
 import { canUpdateNow, describeServerUpdate, forceRefresh, readVersionInfo, requestServerCheck, updateServerNow } from "./refresh.js";
 import { completedToday } from "./today.js";
 import { describeRow, doneRow, formatClock, formatStart, timeline, totalText, wasEdited } from "./times.js";
-import { applyDraft, changesFrom, clockText, dateText, parseEdited, shiftDate, rowTargets, sideEffectText, sideEffects, validateDraft } from "./edit.js";
+import { applyDraft, changesFrom, clockText, dateText, parseEdited, canShiftLater, shiftRowTime, rowTargets, sideEffectText, sideEffects, validateDraft } from "./edit.js";
 import { pushAgain } from "./again.js";
 import { displayText, renderLinked } from "./links.js";
 import { formatFailure } from "./debug-text.js";
@@ -361,7 +361,7 @@ function renderDetails() {
         b.setAttribute("aria-label", aria);
         b.addEventListener("mousedown", (e) => e.preventDefault()); // keep focus, so a half-typed clock is not re-rendered away
         b.addEventListener("click", () => {
-          const ms = parseEdited(orig, clock.value, shiftDate(dateText(r.t), step));
+          const ms = shiftRowTime(orig, clock.value, r.t, step);
           clock.classList.toggle("bad", ms === null);
           if (ms === null) return;
           if (ms === orig) delete ed.draft.times[key];
@@ -371,7 +371,7 @@ function renderDetails() {
         return b;
       };
       const next = mk("+1 day", 1, "One day later");
-      next.disabled = dateText(r.t) >= dateText(now);
+      next.disabled = !canShiftLater(r.t, now);
       days.append(mk("\u22121 day", -1, "One day earlier"), next);
       tdT.appendChild(days);
       const apply = () => {

@@ -102,6 +102,12 @@ export function shiftDate(date, n) {
   return Number.isFinite(out.getTime()) ? dateText(out.getTime()) : null;
 }
 
+/** The row's time after a day button: the typed clock on the day `step` from `currentMs`'s day. Null for a bad clock. */
+export const shiftRowTime = (original, clock, currentMs, step) => parseEdited(original, clock, shiftDate(dateText(currentMs), step));
+
+/** Whether "+1 day" is allowed: only while the row's day is before today (no future dates). */
+export const canShiftLater = (ms, now) => dateText(ms) < dateText(now);
+
 /**
  * A new time from what was typed: "HH:MM" or "HH:MM:SS" (24 hour), on `date` (default: the original's day).
  * Seconds are optional: left out, the original seconds (and milliseconds) are kept, even when the minute changes.
