@@ -12,7 +12,7 @@ export type Item = { id: string; text: string; ts: number; at: number; removed: 
  * build, or a device that has not synced yet) cannot undo an edit by sending its state again. A new row ignores it.
  */
 export type ItemInput = { text: string; ts: number; removed: boolean; at?: number; origin?: string | null; edit?: boolean };
-export type LogEvent = { n: number; ts: number; at: number; op: "push" | "pop" | "restore" | "queue" | "dequeue" | "requeue" | "start" | "edit"; id: string; text: string; detail?: string };
+export type LogEvent = { n: number; ts: number; at: number; op: "push" | "pop" | "restore" | "queue" | "dequeue" | "requeue" | "start" | "edit" | "note"; id: string; text: string; detail?: string };
 
 /**
  * The queue is a pile of things to do later, kept apart from the stack: its own table, its own `seq` numbering and
@@ -21,6 +21,14 @@ export type LogEvent = { n: number; ts: number; at: number; op: "push" | "pop" |
  */
 export type QueueItem = { id: string; text: string; ts: number; at: number; removed: boolean; started: boolean; seq: number };
 export type QueueInput = { text: string; ts: number; removed: boolean; started?: boolean; at?: number };
+
+/**
+ * A note is a short text entry with a time ("ts"), kept apart from the stack: it never goes on it and is never on top.
+ * Last write wins. `edit: true` marks a deliberate correction, as for items; without it a write to an existing row
+ * keeps the stored text and ts. A removed row is a tombstone.
+ */
+export type Note = { id: string; text: string; ts: number; removed: boolean; seq: number; edited_at?: number };
+export type NoteInput = { text: string; ts: number; removed?: boolean; edit?: boolean };
 
 export class ValidationError extends Error {
   constructor(message: string) {
@@ -33,6 +41,7 @@ export const MAX_TEXT = 200;
 const SKEW_MS = 5 * 60_000; // how far past the server clock an edited time may be before it is refused
 const ID_RE = /^s-[a-z0-9]{4,40}$/;
 const QUEUE_ID_RE = /^q-[a-z0-9]{4,40}$/;
+const NOTE_ID_RE = /^n-[a-z0-9]{4,40}$/;
 
 /** What one sync call returns for one table: rows changed since the cursor, the rows it just wrote, and changes it refused. */
 export type TableSync = { rows: unknown[]; saved: Record<string, unknown>; rejected: Record<string, { error: string }> };
@@ -43,7 +52,7 @@ export type SyncResult = { cursor: number; tables: Record<string, TableSync>; to
  * stored, so a database made before the tables shared a counter opens as it is. To add a table: put it in this list,
  * give it a `seq` column and an index on it, and add an entry to the registry in `openStore`.
  */
-export const SYNCED_TABLES = ["items", "queue"] as const;
+export const SYNCED_TABLES = ["items", "queue", "notes"] as const;
 const NEXT_SEQ = `(SELECT MAX(m) + 1 FROM (${SYNCED_TABLES.map((t) => `SELECT COALESCE(MAX(seq), 0) AS m FROM ${t}`).join(" UNION ALL ")}))`;
 
 export interface Store {
@@ -57,6 +66,7 @@ export interface Store {
   upsertQueue(id: string, input: QueueInput): QueueItem;
   queueSince(seq: number): { seq: number; items: QueueItem[] };
   queueCounts(): { queued: number; removed: number };
+  upsertNote(id: string, input: NoteInput): Note;
   /** The shared counter: the highest `seq` issued to any synced table. */
   cursor(): number;
   /**
@@ -71,6 +81,9 @@ export interface Store {
 
 type QueueRow = { id: string; text: string; ts: number; at: number; removed: number; started: number; seq: number };
 const toQueueItem = (r: QueueRow): QueueItem => ({ id: r.id, text: r.text, ts: r.ts, at: r.at, removed: r.removed === 1, started: r.started === 1, seq: r.seq });
+
+type NoteRow = { id: string; text: string; ts: number; removed: number; seq: number; edited_at: number | null };
+const toNote = (r: NoteRow): Note => ({ id: r.id, text: r.text, ts: r.ts, removed: r.removed === 1, seq: r.seq, ...(r.edited_at != null ? { edited_at: r.edited_at } : {}) });
 
 type Row = { id: string; text: string; ts: number; at: number | null; removed: number; seq: number; origin: string | null; edited_at: number | null };
 // `origin` is left out when there is none, so rows that were never pushed again look exactly as they always did.
@@ -100,6 +113,8 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
     "CREATE TABLE IF NOT EXISTS queue (id TEXT PRIMARY KEY, text TEXT NOT NULL, ts INTEGER NOT NULL, at INTEGER NOT NULL, removed INTEGER NOT NULL, started INTEGER NOT NULL, seq INTEGER NOT NULL)",
   );
   db.run("CREATE INDEX IF NOT EXISTS queue_seq ON queue (seq)");
+  db.run("CREATE TABLE IF NOT EXISTS notes (id TEXT PRIMARY KEY, text TEXT NOT NULL, ts INTEGER NOT NULL, removed INTEGER NOT NULL, seq INTEGER NOT NULL, edited_at INTEGER)");
+  db.run("CREATE INDEX IF NOT EXISTS notes_seq ON notes (seq)");
   db.run("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
   const savedEpoch = db.prepare("SELECT value FROM meta WHERE key = 'epoch'").get() as { value: string } | null;
   const epoch = savedEpoch?.value ?? crypto.randomUUID();
@@ -226,11 +241,43 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
     return saved;
   });
 
+  const NCOLS = "id, text, ts, removed, seq, edited_at";
+  const writeNote = db.prepare(
+    `INSERT INTO notes (id, text, ts, removed, edited_at, seq) VALUES ($id, $text, $ts, $removed, NULL, ${NEXT_SEQ})
+     ON CONFLICT(id) DO UPDATE SET text = $text, ts = $ts, removed = $removed, edited_at = COALESCE($editedAt, notes.edited_at), seq = ${NEXT_SEQ}
+     RETURNING ${NCOLS}`,
+  );
+  const findNote = db.prepare(`SELECT ${NCOLS} FROM notes WHERE id = $id`);
+  const laterNotes = db.prepare(`SELECT ${NCOLS} FROM notes WHERE seq > $seq ORDER BY seq ASC`);
+
+  // A new note logs one `note` event (its text, dated at the note's own time). A deliberate edit logs an `edit` event
+  // with what changed, like an item edit. Removing logs nothing. A resend of the same state adds nothing.
+  const upsertNoteTx = db.transaction((id: string, inText: string, inTs: number, removed: boolean, edit: boolean) => {
+    const now = clock();
+    const clamp = (t: number) => Math.max(0, Math.min(t, now));
+    const before = findNote.get({ $id: id }) as NoteRow | null;
+    const isEdit = edit && before !== null;
+    if (isEdit && inTs > now + SKEW_MS) throw new ValidationError("a time cannot be in the future");
+    const text = before && !isEdit ? before.text : inText;
+    const ts = before && !isEdit ? before.ts : clamp(inTs);
+    const diff: Record<string, { from: unknown; to: unknown }> = {};
+    if (isEdit) {
+      if (before!.text !== text) diff.text = { from: before!.text, to: text };
+      if (before!.ts !== ts) diff.ts = { from: before!.ts, to: ts };
+    }
+    const edited = Object.keys(diff).length > 0;
+    const saved = toNote(writeNote.get({ $id: id, $text: text, $ts: ts, $removed: removed ? 1 : 0, $editedAt: edited ? now : null }) as NoteRow);
+    if (!before) record.run({ $ts: now, $at: ts, $op: "note", $id: id, $text: text, $detail: null });
+    if (edited) record.run({ $ts: now, $at: now, $op: "edit", $id: id, $text: text, $detail: JSON.stringify(diff) });
+    return saved;
+  });
+
   const maxSeqs = db.prepare(`SELECT MAX(m) AS seq FROM (${SYNCED_TABLES.map((t) => `SELECT COALESCE(MAX(seq), 0) AS m FROM ${t}`).join(" UNION ALL ")})`);
   const cursor = () => (maxSeqs.get() as { seq: number }).seq;
 
   // One entry per synced table (the names in SYNCED_TABLES): how to write a row and how to read rows above a seq.
   const registry: Record<(typeof SYNCED_TABLES)[number], { upsert(id: string, input: any): unknown; since(seq: number): unknown[] }> = {
+    notes: { upsert: (id, input) => store.upsertNote(id, input), since: (seq) => (laterNotes.all({ $seq: seq }) as NoteRow[]).map(toNote) },
     items: { upsert: (id, input) => store.upsert(id, input), since: (seq) => (later.all({ $seq: seq }) as Row[]).map(toItem) },
     queue: { upsert: (id, input) => store.upsertQueue(id, input), since: (seq) => (laterQueue.all({ $seq: seq }) as QueueRow[]).map(toQueueItem) },
   };
@@ -263,6 +310,14 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
       // Read after every write, so the rows just saved come back too.
       for (const name of SYNCED_TABLES) tables[name].rows = registry[name].since(since);
       return { cursor: cursor(), tables, touched: SYNCED_TABLES.filter((n) => Object.keys(tables[n].saved).length > 0) };
+    },
+    upsertNote(id, input) {
+      if (typeof id !== "string" || !NOTE_ID_RE.test(id)) throw new ValidationError("invalid id");
+      const text = typeof input.text === "string" ? input.text.trim() : "";
+      if (!text) throw new ValidationError("text is required");
+      if (text.length > MAX_TEXT) throw new ValidationError(`text is over ${MAX_TEXT} characters`);
+      if (!Number.isSafeInteger(input.ts)) throw new ValidationError("ts must be an integer");
+      return upsertNoteTx.immediate(id, text, input.ts, input.removed === true, input.edit === true);
     },
     upsertQueue(id, input) {
       if (typeof id !== "string" || !QUEUE_ID_RE.test(id)) throw new ValidationError("invalid id");

@@ -107,7 +107,7 @@ describe("POST /api/sync", () => {
   test("bad requests keep HTTP semantics", async () => {
     expect((await post("{nope", true)).status).toBe(400);
     expect((await post("[1]", true)).status).toBe(400);
-    expect((await post({ cursor: 0, changes: { notes: { "n-aaaa": {} } } })).status).toBe(400);
+    expect((await post({ cursor: 0, changes: { nope: { "n-aaaa": {} } } })).status).toBe(400);
     expect((await post({ cursor: 0, changes: { items: [] } })).status).toBe(400);
     expect((await post({ cursor: 0, changes: { items: { "s-aaaa": item("x".repeat(300_000)) } } })).status).toBe(413);
     const many = Object.fromEntries(Array.from({ length: 501 }, (_, i) => [`s-a${String(i).padStart(4, "0")}`, item()]));

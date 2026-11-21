@@ -133,6 +133,16 @@ A pile of things to do later, in no particular order (not a line: nothing about 
 - **Metrics.** `interrupt_stack_items{state="live"}` still counts the stack only. The queue has `interrupt_stack_queue_items{state="queued"|"removed"}`.
 - **Static version.** Works the same, entirely in the browser, with no network calls.
 
+## Notes
+
+A short text entry (not empty, up to 200 characters) that never touches the stack and goes straight into **Done today**. The **+ Note** button on the Done today heading opens a text box: Enter or **Add** saves, Escape cancels. The time is always now.
+
+- **A separate table.** `notes` (ids `n-<x>`) on the same sync channel (`SYNCED_TABLES` entry plus `hub.table("notes", ...)`), last write wins, with tombstones (`removed`). It has its own IndexedDB database (`interrupt-stack-notes`). Notes are not counted in stack depth, the `live` metric, the timeline or time on top, and are never pushed or popped.
+- **Events.** One `note` event when a note is created (its text, dated at the note's time). An edit logs an `edit` event with `detail` (`{text?, ts?}` from/to) and sets `edited_at`, the same way item edits do, and is sent with `edit: true` so a stale copy cannot undo it. Removing logs nothing.
+- **Row.** One time (in the Ended column), a dash for the duration, a quiet "note" label. The row is a button like any Done today row, so links in the text are plain text there and are clickable in the panel that opens.
+- **Edit.** Tapping a note opens a small panel with its text and its time (24-hour `HH:MM` or `HH:MM:SS`, on the note's own day; the day buttons can be added once they are merged). No timeline, no Push again.
+- **Static version.** Notes live in the browser only.
+
 ## Updating the app on your devices
 
 Devices keep a cached copy of the app so it opens instantly and offline, and they refresh it in the background, so a new release normally appears on the second load. Two things speed that up:

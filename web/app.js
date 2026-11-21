@@ -1,10 +1,11 @@
 import { createSync } from "./sync.js";
-import { openStorage, QUEUE_DB_NAME } from "./idb.js";
+import { NOTES_DB_NAME, openStorage, QUEUE_DB_NAME } from "./idb.js";
 import { createQueue, QUEUE_LABEL } from "./queue.js";
+import { createNotes, MAX_TEXT as NOTE_MAX } from "./notes.js";
 import { currentPane, pillFor } from "./pane.js";
 import { createEventStream } from "./events.js";
 import { canUpdateNow, describeServerUpdate, forceRefresh, readVersionInfo, requestServerCheck, updateServerNow } from "./refresh.js";
-import { completedToday } from "./today.js";
+import { doneTodayEntries } from "./today.js";
 import { describeRow, doneRow, formatClock, formatStart, timeline, totalText, wasEdited } from "./times.js";
 import { applyDraft, changesFrom, clockText, dateText, parseEdited, canShiftLater, shiftRowTime, rowTargets, sideEffectText, sideEffects, validateDraft } from "./edit.js";
 import { pushAgain } from "./again.js";
@@ -20,6 +21,7 @@ const UNDO_MS = 15000;
 
 let sync;
 let queue;
+let notes;
 let lastRemoved = null; // { it, kind: "stack" | "queue" }
 let undoTimer = null;
 
@@ -108,11 +110,16 @@ function render() {
   $("swap-btn").disabled = stack.length === 0;
 
   const all = sync.allItems();
-  const done = completedToday(all, Date.now());
+  const done = doneTodayEntries(all, notes ? notes.notes() : [], Date.now());
   const doneList = $("done");
   doneList.textContent = "";
-  $("done-wrap").hidden = done.length === 0;
-  for (const it of done) {
+  $("done-cols").hidden = done.length === 0;
+  for (const entry of done) {
+    if (entry.kind === "note") {
+      doneList.appendChild(noteRow(entry.note));
+      continue;
+    }
+    const it = entry.item;
     const li = document.createElement("li");
     const row = doneRow(it, all, undefined, Date.now());
     // A row with a real end time opens its details; one without (stored before end times existed) is plain text.
@@ -174,6 +181,93 @@ function render() {
     li.append(d, tx, ag, x);
     under.appendChild(li);
   });
+}
+
+// A note in Done today: one time (in the Ended column; the Started column stays empty), a dash for the duration, a quiet
+// "note" label. Tapping it opens a small panel to change its text and time.
+function noteRow(n) {
+  const li = document.createElement("li");
+  const body = document.createElement("button");
+  body.type = "button";
+  body.className = "done-body";
+  body.dataset.noteId = n.id;
+  body.setAttribute("aria-label", `Note: ${displayText(n.text)}. Edit`);
+  body.setAttribute("aria-haspopup", "dialog");
+  body.addEventListener("click", () => openNote(n.id));
+  const tx = document.createElement("span");
+  tx.className = "item-text";
+  renderLinked(tx, n.text, { links: false });
+  const tag = document.createElement("small");
+  tag.className = "note-tag";
+  tag.textContent = n.edited_at != null ? "note, edited" : "note";
+  tx.appendChild(tag);
+  const start = document.createElement("span");
+  start.className = "item-age col-start";
+  const time = document.createElement("span");
+  time.className = "item-age";
+  time.textContent = formatStart(n.ts, Date.now());
+  const dur = document.createElement("span");
+  dur.className = "item-age";
+  dur.textContent = "\u2014";
+  body.append(tx, start, time, dur);
+  li.appendChild(body);
+  return li;
+}
+
+let noteEditing = null; // id of the note whose panel is open
+
+function openNote(id) {
+  const n = notes.get(id);
+  if (!n || n.removed) return;
+  noteEditing = id;
+  $("note-text").value = n.text;
+  renderLinked($("note-linked"), n.text); // the row is a button, so its links are plain text; here they work
+  $("note-time").value = clockText(n.ts);
+  $("note-meta").textContent = dateText(n.ts) === dateText(Date.now()) ? "" : `On ${dateText(n.ts)}. Only the time of day can be changed here.`;
+  checkNote();
+  $("note-dialog").showModal();
+}
+
+// What the panel would save, or why not. The time keeps the note's own day (the day buttons can come later).
+function noteDraft() {
+  const n = noteEditing && notes.get(noteEditing);
+  if (!n) return null;
+  const text = $("note-text").value.trim();
+  const ts = parseEdited(n.ts, $("note-time").value);
+  const problems = [];
+  if (!text) problems.push("Text cannot be empty.");
+  else if (text.length > NOTE_MAX) problems.push(`Text is over ${NOTE_MAX} characters.`);
+  if (ts === null) problems.push("That time is not valid. Use HH:MM or HH:MM:SS, 24 hour.");
+  else if (ts > Date.now()) problems.push("A time cannot be in the future.");
+  return { n, text, ts, problems, changed: text !== n.text || ts !== n.ts };
+}
+
+function checkNote() {
+  const d = noteDraft();
+  if (!d) return;
+  $("note-time").classList.toggle("bad", d.ts === null);
+  const p = $("note-problems");
+  p.hidden = !d.problems.length;
+  p.textContent = d.problems.join(" ");
+  $("note-save").disabled = d.problems.length > 0 || !d.changed;
+}
+
+async function saveNote() {
+  const d = noteDraft();
+  if (!d || d.problems.length || !d.changed) return;
+  $("note-save").disabled = true;
+  await notes.edit(d.n.id, { text: d.text, ts: d.ts });
+  $("note-dialog").close();
+}
+
+function openNoteBox(open) {
+  $("note-form").hidden = !open;
+  $("note-add-btn").setAttribute("aria-expanded", String(open));
+  if (open) $("note-input").focus();
+  else {
+    $("note-input").value = "";
+    $("note-add-btn").focus();
+  }
 }
 
 function renderQueue() {
@@ -546,6 +640,10 @@ async function init() {
   try {
     queueStorage = await openStorage(QUEUE_DB_NAME);
   } catch {}
+  let notesStorage = {};
+  try {
+    notesStorage = await openStorage(NOTES_DB_NAME);
+  } catch {}
   // A start can be interrupted between its two parts; whenever either side changes, finish any that were.
   const changed = () => {
     render();
@@ -553,6 +651,7 @@ async function init() {
   };
   sync = createSync({ storage, fetch: (p, i) => fetch(p, i), onChange: changed, onStatus: updateStatus, online: () => navigator.onLine, local: LOCAL_ONLY });
   queue = createQueue({ storage: queueStorage, stack: sync, onChange: changed, local: LOCAL_ONLY }); // joins the stack's sync channel
+  notes = createNotes({ storage: notesStorage, stack: sync, onChange: changed, local: LOCAL_ONLY }); // joins it too
   labelQueue();
   render();
 
@@ -588,6 +687,32 @@ async function init() {
     const item = await queue.add(text);
     if (!item) inp.value = text;
     inp.focus();
+  });
+  $("note-add-btn").addEventListener("click", () => openNoteBox($("note-form").hidden));
+  $("note-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const text = $("note-input").value.trim();
+    if (!text) return;
+    const note = await notes.add(text);
+    if (note) openNoteBox(false);
+  });
+  $("note-input").addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      openNoteBox(false);
+    }
+  });
+  $("note-text").addEventListener("input", checkNote);
+  $("note-time").addEventListener("input", checkNote);
+  $("note-save").addEventListener("click", saveNote);
+  $("note-close").addEventListener("click", () => $("note-dialog").close());
+  $("note-dialog").addEventListener("click", (ev) => {
+    if (ev.target === $("note-dialog")) $("note-dialog").close();
+  });
+  $("note-dialog").addEventListener("close", () => {
+    const id = noteEditing;
+    noteEditing = null;
+    if (id) document.querySelector(`#done [data-note-id="${CSS.escape(id)}"]`)?.focus();
   });
   $("pane-pill").addEventListener("click", () => showPane($("pane-pill").dataset.target === "queue" ? "pane-queue" : "pane-stack"));
   let paneFrame = 0;
@@ -671,7 +796,7 @@ async function init() {
     }
   };
 
-  await Promise.all([sync.start(), queue.start()]);
+  await Promise.all([sync.start(), queue.start(), notes.start()]);
   updateStatus();
 
   const syncNow = () => {

@@ -54,6 +54,27 @@
     </span>
   </div>
 
+  <dialog id="note-dialog" class="details" aria-labelledby="note-title">
+    <div class="details-box">
+      <div class="debug-head">
+        <h2 id="note-title">Note</h2>
+        <span class="debug-actions"><button type="button" id="note-close">Close</button></span>
+      </div>
+      <p class="edit-problems" id="note-problems" role="alert" hidden></p>
+      <p class="note-linked" id="note-linked"></p>
+      <div class="note-fields">
+        <label for="note-text">Text</label>
+        <input id="note-text" class="title-edit" maxlength="200" autocomplete="off">
+        <label for="note-time">Time, 24 hour HH:MM or HH:MM:SS</label>
+        <input id="note-time" class="clock note-time" type="text" inputmode="numeric" autocomplete="off" placeholder="HH:MM:SS" maxlength="8">
+        <p class="note-meta" id="note-meta"></p>
+      </div>
+      <div class="details-foot">
+        <button type="button" class="primary" id="note-save" disabled>Save</button>
+      </div>
+    </div>
+  </dialog>
+
   <dialog id="details-dialog" class="details" aria-labelledby="details-title">
     <div class="details-box">
       <div class="debug-head">
@@ -114,9 +135,16 @@
       <section class="under" id="under-wrap" hidden>
         <ol id="under" aria-label="Underneath the current task"></ol>
       </section>
-      <section class="done" id="done-wrap" hidden>
-        <div class="label">Done today</div>
-        <div class="done-cols label"><span class="col-start">Started</span><span>Ended</span><span>On top</span></div>
+      <section class="done" id="done-wrap">
+        <div class="done-head">
+          <div class="label">Done today</div>
+          <button type="button" class="note-add" id="note-add-btn" aria-expanded="false" aria-controls="note-form">+ Note</button>
+        </div>
+        <form id="note-form" class="note-form" autocomplete="off" hidden>
+          <input id="note-input" maxlength="200" placeholder="A note for today" aria-label="New note">
+          <button type="submit" class="primary" id="note-save-btn">Add</button>
+        </form>
+        <div class="done-cols label" id="done-cols"><span class="col-start">Started</span><span>Ended</span><span>On top</span></div>
         <ol id="done"></ol>
       </section>
     </section>
