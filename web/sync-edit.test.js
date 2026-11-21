@@ -15,11 +15,11 @@ function memStorage() {
   const items = new Map();
   let dirty = [];
   return {
-    load: async () => ({ items: [...items.values()].map((i) => ({ ...i })), dirty: [...dirty], lastSeq: 0, epoch: null }),
+    load: async () => ({ items: [...items.values()].map((i) => ({ ...i })), dirty: [...dirty], cursor: 0, epoch: null }),
     setEpoch: async () => {},
     putItem: async (i) => void items.set(i.id, { ...i }),
     setDirty: async (ids) => void (dirty = [...ids]),
-    setLastSeq: async () => {},
+    setCursor: async () => {},
   };
 }
 
@@ -34,15 +34,17 @@ function server() {
   return createApp(store, { webDir: dir });
 }
 
-// A client against the real app. `net.up = false` makes it throw like an offline device; `net.bodies` records PUT bodies.
+// A client against the real app. `net.up = false` makes it throw like an offline device; `net.bodies` records the item changes sent.
 function client(app, { stripEdit = false } = {}) {
   const net = { up: true, bodies: [] };
   const fetch = async (path, init = {}) => {
     if (!net.up) throw new TypeError("offline");
-    if (init.method === "PUT") {
+    if (init.method === "POST") {
       const body = JSON.parse(init.body);
-      net.bodies.push(body);
-      if (stripEdit) delete body.edit; // an older build never sends it
+      for (const row of Object.values(body.changes.items ?? {})) {
+        net.bodies.push({ ...row });
+        if (stripEdit) delete row.edit; // an older build never sends it
+      }
       init = { ...init, body: JSON.stringify(body) };
     }
     return app.fetch(new Request("http://t" + path, init));

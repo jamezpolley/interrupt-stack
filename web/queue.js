@@ -1,8 +1,8 @@
 // The queue: a pile of things to do later, in no particular order. It is a separate structure from the stack, with its
-// own sync state (this file), its own IndexedDB database, and its own API (/api/queue). The stack's code (sync.js)
-// knows nothing about it, so a cached client from before the queue existed ignores it and keeps working.
+// own rows, its own server table and its own IndexedDB database for them, but it syncs through the same channel as the
+// stack (core.js): it joins the stack's hub, so one request carries both. The stack's code knows nothing about it.
 //
-// Like sync.js this has no browser globals: storage and fetch are injected so it runs under `bun test`.
+// Like sync.js this has no browser globals: storage is injected so it runs under `bun test`.
 
 /** The label the person sees for this pile. Rename it here and nowhere else. */
 export const QUEUE_LABEL = "Later";
@@ -14,43 +14,18 @@ export const QUEUE_LABEL = "Later";
  */
 export const stackIdFor = (queueId) => "s-" + queueId.slice(2);
 
-const permanentlyRejected = (status) => status >= 400 && status < 500 && status !== 408 && status !== 429;
+// What the queue sends for one row.
+const toWire = (it) => ({ text: it.text, ts: it.ts, removed: it.removed, started: !!it.started, at: it.at });
 
-// `local` is the static version: nothing is sent anywhere. `stack` is the stack's sync (sync.js), used by `promote`.
-export function createQueue({ storage, fetch, stack, now = () => Date.now(), onChange = () => {}, onStatus = () => {}, local = false }) {
-  const items = new Map(); // id -> {id, text, ts, at, removed, started, seq}; `removed` rows are tombstones
-  const dirty = new Set();
-  let lastSeq = 0;
-  let epoch = null;
-  let state = local ? "local" : "syncing";
-  let storageFailed = false;
-  let running = null;
-  let rerun = false;
+// `local` is the static version: nothing is sent anywhere. `stack` is the stack's sync (sync.js), used by `promote` and
+// to share its sync channel. `fetch` and `onStatus` are not used: the stack's hub owns the network and the one status.
+export function createQueue({ storage, stack, now = () => Date.now(), onChange = () => {} }) {
+  const hub = stack.hub;
+  const table = hub.table("queue", { storage, onChange, toWire }); // id -> {id, text, ts, at, removed, started, seq}; `removed` rows are tombstones
+  const items = table.items;
+  const setItem = (item) => table.setItems([item]);
+  const syncNow = hub.syncNow;
   const starting = new Set(); // ids whose start is under way here, so reconcile leaves them to promote
-
-  const status = () => ({ state, pending: dirty.size, ...(storageFailed ? { storageFailed: true } : {}) });
-  const setState = (s) => {
-    state = s;
-    onStatus(status());
-  };
-  async function safe(fn) {
-    try {
-      await fn();
-    } catch {
-      storageFailed = true;
-    }
-  }
-
-  async function setItem(item) {
-    storageFailed = false;
-    items.set(item.id, item);
-    if (!local) dirty.add(item.id);
-    await safe(() => storage.putItem(item));
-    if (!local) await safe(() => storage.setDirty([...dirty]));
-    onChange();
-    onStatus(status());
-    syncNow().catch(() => {});
-  }
 
   const newItem = (text, ts) => ({
     id: `q-${ts.toString(36)}${Math.random().toString(36).slice(2, 6).padEnd(4, "0")}`,
@@ -66,105 +41,14 @@ export function createQueue({ storage, fetch, stack, now = () => Date.now(), onC
   const current = () =>
     [...items.values()].filter((i) => !i.removed).sort((a, b) => b.ts - a.ts || (a.id < b.id ? 1 : -1));
 
-  async function pass() {
-    setState("syncing");
-    try {
-      const rejected = new Set();
-      for (const id of [...dirty]) {
-        const sent = items.get(id);
-        const res = await fetch(`/api/queue/${encodeURIComponent(id)}`, {
-          method: "PUT",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ text: sent.text, ts: sent.ts, removed: sent.removed, started: !!sent.started, at: sent.at }),
-        });
-        if (permanentlyRejected(res.status)) {
-          rejected.add(id);
-          continue;
-        }
-        if (!res.ok) throw new Error(`PUT ${id} failed: ${res.status}`);
-        const saved = await res.json();
-        if (items.get(id) === sent) {
-          items.set(id, saved);
-          dirty.delete(id);
-          await safe(() => storage.putItem(saved));
-          await safe(() => storage.setDirty([...dirty]));
-        }
-      }
-
-      const res = await fetch(`/api/queue?since=${lastSeq}`);
-      if (!res.ok) throw new Error(`GET queue failed: ${res.status}`);
-      const data = await res.json();
-
-      const replaced = data.seq < lastSeq || (epoch && data.epoch && data.epoch !== epoch);
-      if (replaced) {
-        // The server's database was replaced: start over and re-send everything this device holds.
-        lastSeq = 0;
-        epoch = data.epoch ?? null;
-        await safe(() => storage.setLastSeq(0));
-        await safe(() => storage.setEpoch?.(epoch));
-        for (const id of items.keys()) dirty.add(id);
-        await safe(() => storage.setDirty([...dirty]));
-        rerun = true;
-        return;
-      }
-      if (data.epoch && data.epoch !== epoch) {
-        epoch = data.epoch;
-        await safe(() => storage.setEpoch?.(epoch));
-      }
-
-      for (const row of data.items) {
-        if (dirty.has(row.id)) continue;
-        items.set(row.id, row);
-        await safe(() => storage.putItem(row));
-      }
-      lastSeq = data.seq;
-      await safe(() => storage.setLastSeq(lastSeq));
-      onChange();
-      const changedMeanwhile = [...dirty].some((id) => !rejected.has(id));
-      setState(rejected.size ? "error" : changedMeanwhile ? "syncing" : "synced");
-      if (changedMeanwhile) rerun = true;
-    } catch {
-      setState("offline");
-    }
-  }
-
-  function syncNow() {
-    if (local) return Promise.resolve();
-    if (running) {
-      rerun = true;
-      return running;
-    }
-    running = (async () => {
-      try {
-        do {
-          rerun = false;
-          await pass();
-        } while (rerun);
-      } finally {
-        running = null;
-      }
-    })();
-    return running;
-  }
-
   // The second part of a start: the row is tombstoned and marked started (not dropped).
   const finishStart = (it) => setItem({ ...it, removed: true, started: true, at: now() });
 
   return {
     async start() {
-      let saved;
-      try {
-        saved = await storage.load();
-      } catch {
-        storageFailed = true;
-        saved = { items: [], dirty: [], lastSeq: 0, epoch: null };
-      }
-      for (const it of saved.items) items.set(it.id, it);
-      if (!local) for (const id of saved.dirty) if (items.has(id)) dirty.add(id);
-      lastSeq = saved.lastSeq;
-      epoch = saved.epoch ?? null;
+      await table.load();
       onChange();
-      if (local) return onStatus(status());
+      if (hub.local) return hub.onStatus();
       await syncNow();
     },
 
@@ -219,6 +103,7 @@ export function createQueue({ storage, fetch, stack, now = () => Date.now(), onC
     },
 
     syncNow,
-    status,
+    /** The one status of the shared channel: the same object shape as the stack's, counting every table's pending changes. */
+    status: hub.status,
   };
 }

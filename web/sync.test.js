@@ -25,14 +25,14 @@ function newServer() {
 function memStorage() {
   const items = new Map();
   let dirty = [];
-  let lastSeq = 0;
+  let cursor = 0;
   let epoch = null;
   return {
-    load: async () => ({ items: [...items.values()].map((i) => ({ ...i })), dirty: [...dirty], lastSeq, epoch }),
+    load: async () => ({ items: [...items.values()].map((i) => ({ ...i })), dirty: [...dirty], cursor, epoch }),
     setEpoch: async (e) => void (epoch = e),
     putItem: async (i) => void items.set(i.id, { ...i }),
     setDirty: async (ids) => void (dirty = [...ids]),
-    setLastSeq: async (n) => void (lastSeq = n),
+    setCursor: async (n) => void (cursor = n),
   };
 }
 
@@ -47,10 +47,20 @@ function world() {
       if (!ctl.online) throw new TypeError("network down");
       const forced = ctl.intercept?.(path, init);
       if (forced) return forced;
-      if (ctl.hook && (init.method ?? "GET") === "GET") {
+      if (ctl.hook) {
         const h = ctl.hook;
         ctl.hook = null;
         await h();
+      }
+      // `ctl.refuse(text)`: the server refuses a change with that text the way it refuses an invalid row (per change, in a 200).
+      if (ctl.refuse && path === "/api/sync") {
+        const body = JSON.parse(init.body);
+        const refused = {};
+        for (const [id, c] of Object.entries(body.changes.items ?? {})) if (ctl.refuse(c.text)) (refused[id] = { error: "nope" }, delete body.changes.items[id]);
+        const res = await server.current.app.fetch(new Request("http://t" + path, { ...init, body: JSON.stringify(body) }));
+        const data = await res.json();
+        Object.assign(data.tables.items.rejected, refused);
+        return new Response(JSON.stringify(data), { status: 200, headers: { "content-type": "application/json" } });
       }
       return server.current.app.fetch(new Request("http://t" + path, init));
     };
@@ -310,10 +320,7 @@ describe("server replacement", () => {
 });
 
 describe("failing requests", () => {
-  const rejectBad = (path, init) =>
-    init?.method === "PUT" && JSON.parse(init.body).text === "bad"
-      ? new Response('{"error":"nope"}', { status: 400, headers: { "content-type": "application/json" } })
-      : null;
+  const rejectBad = (text) => text === "bad";
 
   test("one item the server rejects does not block the others or the pull", async () => {
     const w = world();
@@ -321,7 +328,7 @@ describe("failing requests", () => {
     const b = w.mkClient();
     await a.sync.start();
     await b.sync.start();
-    a.ctl.intercept = rejectBad;
+    a.ctl.refuse = rejectBad;
     await a.sync.push("bad");
     await a.sync.push("good");
     await a.sync.syncNow();
@@ -337,10 +344,10 @@ describe("failing requests", () => {
     const w = world();
     const a = w.mkClient();
     await a.sync.start();
-    a.ctl.intercept = rejectBad;
+    a.ctl.refuse = rejectBad;
     await a.sync.push("bad");
     await a.sync.syncNow();
-    a.ctl.intercept = null;
+    a.ctl.refuse = null;
     await a.sync.syncNow();
     expect(serverTexts(w)).toEqual(["bad"]);
     expect(a.sync.status()).toEqual({ state: "synced", pending: 0 });
@@ -350,7 +357,7 @@ describe("failing requests", () => {
     const w = world();
     const a = w.mkClient();
     await a.sync.start();
-    a.ctl.intercept = (path, init) => (init?.method === "PUT" ? new Response("bad gateway", { status: 502 }) : null);
+    a.ctl.intercept = (path, init) => (path === "/api/sync" ? new Response("bad gateway", { status: 502 }) : null);
     await a.sync.push("kept");
     await a.sync.syncNow();
     expect(a.sync.status()).toEqual({ state: "offline", pending: 1, error: { kind: "server-error", status: 502 } });

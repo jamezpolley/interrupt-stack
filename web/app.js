@@ -32,28 +32,9 @@ function showNote(text) {
 const STORAGE_NOTE = "This device could not save your changes locally. Keep this page open until they sync.";
 let storageNoteShown = false;
 
-// One line for both structures: the worst state of the two, and every unsent change counted. The failure kind (and
-// so the status button) comes from the stack, which records it; a failure only the Later sync has shows as plain
-// "Offline" / "Sync problem".
-function combinedStatus() {
-  const st = sync.status();
-  const parts = [st, queue?.status()].filter(Boolean);
-  const state = ["error", "offline", "syncing", "synced"].find((x) => parts.some((p) => p.state === x)) ?? "local";
-  return {
-    state,
-    pending: parts.reduce((n, p) => n + p.pending, 0),
-    storageFailed: parts.some((p) => p.storageFailed),
-    ...(st.state === state && st.error ? { error: st.error } : {}),
-    ...(st.neverSynced ? { neverSynced: true } : {}),
-  };
-}
-// When only the Later sync has just failed, have the stack try too: it knows how to name a failure (and keeps the
-// detail the Debug link shows), and both use the same network, so it will normally fail for the same reason.
-let queueWasOffline = false;
+// The stack and Later share one sync channel (core.js), so there is one status for both: every unsent change counted.
+const combinedStatus = () => sync.status();
 function updateStatus() {
-  const q = queue?.status().state === "offline";
-  if (q && !queueWasOffline && sync.status().state === "synced") sync.syncNow().catch(() => {});
-  queueWasOffline = q;
   renderStatus(combinedStatus());
 }
 
@@ -571,7 +552,7 @@ async function init() {
     queue?.reconcile().catch(() => {});
   };
   sync = createSync({ storage, fetch: (p, i) => fetch(p, i), onChange: changed, onStatus: updateStatus, online: () => navigator.onLine, local: LOCAL_ONLY });
-  queue = createQueue({ storage: queueStorage, fetch: (p, i) => fetch(p, i), stack: sync, onChange: changed, onStatus: updateStatus, local: LOCAL_ONLY });
+  queue = createQueue({ storage: queueStorage, stack: sync, onChange: changed, local: LOCAL_ONLY }); // joins the stack's sync channel
   labelQueue();
   render();
 
@@ -695,7 +676,6 @@ async function init() {
 
   const syncNow = () => {
     sync.syncNow().catch(() => {});
-    queue.syncNow().catch(() => {});
   };
   checkForUpdate();
   // After a Refresh, the server was asked to look at GitHub just before the reload and may not have finished yet.
@@ -709,7 +689,7 @@ async function init() {
   // The stream reconnects itself (events.js). On iOS a stream can also look open after the app resumes from
   // the background while being dead, so it is recreated whenever the page becomes visible.
   // The static version has no server, so no live-update stream either.
-  const events = LOCAL_ONLY ? { connect() {} } : createEventStream({ url: "/api/events", onSeq: syncNow, onQueueSeq: () => queue.syncNow().catch(() => {}) });
+  const events = LOCAL_ONLY ? { connect() {} } : createEventStream({ url: "/api/events", onSync: syncNow });
   events.connect();
 
   document.addEventListener("visibilitychange", () => {
