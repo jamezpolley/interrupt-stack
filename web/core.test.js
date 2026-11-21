@@ -241,3 +241,18 @@ describe("adding a table", () => {
     expect(storage.peek()).toMatchObject({ cursor: 7, epoch: "e", dirty: [] });
   });
 });
+
+describe("a table that has not finished loading", () => {
+  test("a sync pass never overwrites its saved pending list", async () => {
+    const w = world();
+    const queueStorage = memStorage({ items: [{ id: "q-unsent", text: "unsent", ts: 6, at: 6, removed: false, started: false, seq: 0 }], dirty: ["q-unsent"] });
+    const a = w.mkDevice({ queueStorage });
+    await a.stack.start(); // the queue has not been started: its rows and pending list are not loaded yet
+    await a.stack.syncNow();
+    expect(queueStorage.peek().dirty).toEqual(["q-unsent"]);
+    await a.queue.start();
+    await a.stack.syncNow();
+    expect(w.server.store.queueSince(0).items.map((i) => i.text)).toEqual(["unsent"]);
+    expect(queueStorage.peek().dirty).toEqual([]);
+  });
+});

@@ -131,6 +131,7 @@ export function createHub({ meta, fetch, now = () => Date.now(), online = () => 
       storage,
       onChange,
       toWire,
+      loaded: false, // until its saved rows and pending list are in memory, nothing may write that list back
       async load() {
         let saved;
         try {
@@ -141,6 +142,7 @@ export function createHub({ meta, fetch, now = () => Date.now(), online = () => 
         }
         for (const it of saved.items) t.items.set(it.id, it);
         if (!local) for (const id of saved.dirty) if (t.items.has(id)) t.dirty.add(id);
+        t.loaded = true;
         await load();
       },
       // Applies one or more changes together: one redraw, one status update, one sync, so a change made of two parts
@@ -207,7 +209,7 @@ export function createHub({ meta, fetch, now = () => Date.now(), online = () => 
           rejectedNow.push({ table: t.name, id, error: refusal.error });
         }
       }
-      for (const t of tables.values()) await safe(() => t.storage.setDirty?.([...t.dirty]));
+      for (const t of tables.values()) if (t.loaded) await safe(() => t.storage.setDirty?.([...t.dirty]));
       if (rejectedNow.length) {
         lastFailure = {
           at: now(),
@@ -228,7 +230,7 @@ export function createHub({ meta, fetch, now = () => Date.now(), online = () => 
         await safe(() => meta.setEpoch?.(epoch));
         for (const t of tables.values()) {
           for (const id of t.items.keys()) t.dirty.add(id);
-          await safe(() => t.storage.setDirty?.([...t.dirty]));
+          if (t.loaded) await safe(() => t.storage.setDirty?.([...t.dirty]));
         }
         rerun = true;
         return;
