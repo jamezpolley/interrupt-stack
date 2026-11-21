@@ -3,6 +3,8 @@
 const DB_NAME = "interrupt-stack";
 // The queue lives in a database of its own, so what the stack's code opens never changes shape.
 export const QUEUE_DB_NAME = "interrupt-stack-queue";
+// Notes too, for the same reason.
+export const NOTES_DB_NAME = "interrupt-stack-notes";
 
 function request(req) {
   return new Promise((resolve, reject) => {

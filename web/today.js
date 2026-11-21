@@ -8,3 +8,17 @@ export function completedToday(items, nowMs) {
     .filter((i) => i.removed && when(i) >= start.getTime())
     .sort((a, b) => when(b) - when(a) || (a.id < b.id ? 1 : -1));
 }
+
+/**
+ * Done today as one list: the finished items and today's notes together, newest first. An item is dated by when it
+ * ended, a note by its time. Each entry is `{ kind: "item" | "note", item | note }`.
+ */
+export function doneTodayEntries(items, notes, nowMs) {
+  const start = new Date(nowMs);
+  start.setHours(0, 0, 0, 0);
+  const entries = [
+    ...completedToday(items, nowMs).map((item) => ({ kind: "item", item, when: item.at ?? item.ts })),
+    ...notes.filter((n) => !n.removed && n.ts >= start.getTime()).map((note) => ({ kind: "note", note, when: note.ts })),
+  ];
+  return entries.sort((a, b) => b.when - a.when || ((a.item ?? a.note).id < (b.item ?? b.note).id ? 1 : -1));
+}

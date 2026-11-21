@@ -227,3 +227,18 @@ input.title-edit{font:inherit;font-weight:600;font-size:1rem;width:100%;color:va
 .details-foot button{min-height:44px}
 .edited-tag{font-size:.6875rem;font-style:italic;color:var(--muted);opacity:.85}
 .details .debug-head h2{flex:1 1 0}
+
+/* Notes: a quiet button on the Done today heading, an inline box, a small "note" label on the row. */
+.done-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+button.note-add{min-height:36px;padding:4px 10px;font-size:.8125rem;background:transparent;color:var(--muted);border-color:transparent}
+button.note-add:hover:not(:disabled){border-color:var(--line)}
+.note-form{display:flex;gap:8px;align-items:center}
+.note-form input{flex:1 1 0;min-width:0;font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px 10px;min-height:44px}
+.note-form button{min-height:44px}
+.note-tag{font-size:.6875rem;font-style:italic;color:var(--muted);opacity:.85;margin-left:.4em}
+.note-fields{display:flex;flex-direction:column;gap:6px;min-width:0}
+.note-fields label{font-size:.75rem;color:var(--muted)}
+.note-fields input{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px 10px;min-width:0;width:100%;min-height:44px}
+.note-fields input.note-time{font-family:var(--font-mono);width:9em}
+.note-fields input.bad{border-color:var(--warn);outline:1px solid var(--warn)}
+.note-meta{margin:4px 0 0;font-size:.75rem;color:var(--muted)}
