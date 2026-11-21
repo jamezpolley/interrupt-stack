@@ -154,9 +154,9 @@ describe("events", () => {
     const dec = new TextDecoder();
     const next = async () => dec.decode((await reader.read()).value);
 
-    expect(await next()).toBe("event: seq\ndata: 1\n\n");
+    expect(await next()).toBe("event: seq\ndata: 1\n\nevent: sync\ndata: 1\n\n");
     await put("s-bbbb", item());
-    expect(await next()).toBe("event: seq\ndata: 2\n\n");
+    expect(await next()).toBe("event: seq\ndata: 2\n\nevent: sync\ndata: 2\n\n");
     await reader.cancel();
   });
 });
@@ -478,11 +478,12 @@ describe("queue api", () => {
     const reader = res.body!.getReader();
     const dec = new TextDecoder();
     const next = async () => dec.decode((await reader.read()).value);
-    expect(await next()).toBe("event: seq\ndata: 1\n\n");
+    expect(await next()).toBe("event: seq\ndata: 1\n\nevent: sync\ndata: 1\n\n");
     await putQ("q-aaaa", qitem());
-    expect(await next()).toBe("event: qseq\ndata: 1\n\n");
+    // the queue row took the next number from the counter every table shares
+    expect(await next()).toBe("event: qseq\ndata: 2\n\nevent: sync\ndata: 2\n\n");
     await put("s-bbbb", item());
-    expect(await next()).toBe("event: seq\ndata: 2\n\n");
+    expect(await next()).toBe("event: seq\ndata: 3\n\nevent: sync\ndata: 3\n\n");
     await reader.cancel();
   });
 

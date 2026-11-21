@@ -145,3 +145,16 @@ describe("queue events", () => {
     expect(got).toEqual(["qseq", "seq"]);
   });
 });
+
+describe("shared channel event", () => {
+  test("the `sync` event goes to onSync; seq and qseq are optional", () => {
+    FakeSource.all = [];
+    const got = [];
+    const stream = createEventStream({ url: "/api/events", make: (u) => new FakeSource(u), onSync: () => got.push("sync") });
+    stream.connect();
+    FakeSource.all[0].emit("seq");
+    FakeSource.all[0].emit("qseq");
+    FakeSource.all[0].emit("sync");
+    expect(got).toEqual(["sync"]);
+  });
+});

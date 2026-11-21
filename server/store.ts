@@ -34,6 +34,18 @@ const SKEW_MS = 5 * 60_000; // how far past the server clock an edited time may 
 const ID_RE = /^s-[a-z0-9]{4,40}$/;
 const QUEUE_ID_RE = /^q-[a-z0-9]{4,40}$/;
 
+/** What one sync call returns for one table: rows changed since the cursor, the rows it just wrote, and changes it refused. */
+export type TableSync = { rows: unknown[]; saved: Record<string, unknown>; rejected: Record<string, { error: string }> };
+export type SyncResult = { cursor: number; tables: Record<string, TableSync>; touched: string[] };
+
+/**
+ * Every synced table draws its `seq` from ONE counter: the highest `seq` in any of them, plus one. Nothing extra is
+ * stored, so a database made before the tables shared a counter opens as it is. To add a table: put it in this list,
+ * give it a `seq` column and an index on it, and add an entry to the registry in `openStore`.
+ */
+export const SYNCED_TABLES = ["items", "queue"] as const;
+const NEXT_SEQ = `(SELECT MAX(m) + 1 FROM (${SYNCED_TABLES.map((t) => `SELECT COALESCE(MAX(seq), 0) AS m FROM ${t}`).join(" UNION ALL ")}))`;
+
 export interface Store {
   /** Identifies this database. A client that sees it change knows the server's data was replaced. */
   readonly epoch: string;
@@ -45,6 +57,15 @@ export interface Store {
   upsertQueue(id: string, input: QueueInput): QueueItem;
   queueSince(seq: number): { seq: number; items: QueueItem[] };
   queueCounts(): { queued: number; removed: number };
+  /** The shared counter: the highest `seq` issued to any synced table. */
+  cursor(): number;
+  /**
+   * One round trip for every synced table: applies `changes` (table name -> id -> input, each through that table's
+   * own upsert, so validation, events and clamping are exactly those of the single-row calls), then returns every
+   * row whose `seq` is above `cursor`. A change that fails validation is reported in `rejected`, never thrown.
+   * Throws ValidationError only for a malformed request (an unknown table, changes that are not an object).
+   */
+  sync(cursor: number, changes: Record<string, unknown>): SyncResult;
   close(): void;
 }
 
@@ -86,11 +107,11 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
 
   const write = db.prepare(
     `INSERT INTO items (id, text, ts, at, removed, origin, edited_at, seq)
-     VALUES ($id, $text, $ts, $at, $removed, $origin, NULL, (SELECT COALESCE(MAX(seq), 0) + 1 FROM items))
+     VALUES ($id, $text, $ts, $at, $removed, $origin, NULL, ${NEXT_SEQ})
      ON CONFLICT(id) DO UPDATE SET text = $text, ts = $ts, at = $at, removed = $removed,
        origin = COALESCE(items.origin, $origin),
        edited_at = COALESCE($editedAt, items.edited_at),
-       seq = (SELECT COALESCE(MAX(seq), 0) + 1 FROM items)
+       seq = ${NEXT_SEQ}
      RETURNING id, text, ts, at, removed, seq, origin, edited_at`,
   );
   const find = db.prepare("SELECT id, text, ts, at, removed, seq, origin, edited_at FROM items WHERE id = $id");
@@ -160,9 +181,9 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
   const QCOLS = "id, text, ts, at, removed, started, seq";
   const writeQueue = db.prepare(
     `INSERT INTO queue (id, text, ts, at, removed, started, seq)
-     VALUES ($id, $text, $ts, $at, $removed, $started, (SELECT COALESCE(MAX(seq), 0) + 1 FROM queue))
+     VALUES ($id, $text, $ts, $at, $removed, $started, ${NEXT_SEQ})
      ON CONFLICT(id) DO UPDATE SET text = $text, ts = $ts, at = $at, removed = $removed, started = $started,
-       seq = (SELECT COALESCE(MAX(seq), 0) + 1 FROM queue)
+       seq = ${NEXT_SEQ}
      RETURNING ${QCOLS}`,
   );
   const findQueue = db.prepare(`SELECT ${QCOLS} FROM queue WHERE id = $id`);
@@ -205,8 +226,44 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
     return saved;
   });
 
-  return {
+  const maxSeqs = db.prepare(`SELECT MAX(m) AS seq FROM (${SYNCED_TABLES.map((t) => `SELECT COALESCE(MAX(seq), 0) AS m FROM ${t}`).join(" UNION ALL ")})`);
+  const cursor = () => (maxSeqs.get() as { seq: number }).seq;
+
+  // One entry per synced table (the names in SYNCED_TABLES): how to write a row and how to read rows above a seq.
+  const registry: Record<(typeof SYNCED_TABLES)[number], { upsert(id: string, input: any): unknown; since(seq: number): unknown[] }> = {
+    items: { upsert: (id, input) => store.upsert(id, input), since: (seq) => (later.all({ $seq: seq }) as Row[]).map(toItem) },
+    queue: { upsert: (id, input) => store.upsertQueue(id, input), since: (seq) => (laterQueue.all({ $seq: seq }) as QueueRow[]).map(toQueueItem) },
+  };
+  const isObject = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
+
+  const store: Store = {
     epoch,
+    cursor,
+    sync(since, changes) {
+      if (!isObject(changes)) throw new ValidationError("changes must be an object");
+      for (const [name, rows] of Object.entries(changes)) {
+        if (!(name in registry)) throw new ValidationError(`unknown table: ${name}`);
+        if (!isObject(rows)) throw new ValidationError(`changes for ${name} must be an object`);
+      }
+      const tables: Record<string, TableSync> = {};
+      for (const name of SYNCED_TABLES) {
+        const saved: Record<string, unknown> = {};
+        const rejected: Record<string, { error: string }> = {};
+        for (const [id, input] of Object.entries((changes[name] ?? {}) as Record<string, unknown>)) {
+          try {
+            if (!isObject(input)) throw new ValidationError("a change must be an object");
+            saved[id] = registry[name].upsert(id, input);
+          } catch (e) {
+            if (!(e instanceof ValidationError)) throw e;
+            rejected[id] = { error: e.message };
+          }
+        }
+        tables[name] = { rows: [], saved, rejected };
+      }
+      // Read after every write, so the rows just saved come back too.
+      for (const name of SYNCED_TABLES) tables[name].rows = registry[name].since(since);
+      return { cursor: cursor(), tables, touched: SYNCED_TABLES.filter((n) => Object.keys(tables[n].saved).length > 0) };
+    },
     upsertQueue(id, input) {
       if (typeof id !== "string" || !QUEUE_ID_RE.test(id)) throw new ValidationError("invalid id");
       const text = typeof input.text === "string" ? input.text.trim() : "";
@@ -255,4 +312,5 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
       db.close();
     },
   };
+  return store;
 }

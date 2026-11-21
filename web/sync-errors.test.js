@@ -4,19 +4,28 @@ import { createSync } from "./sync.js";
 function memStorage() {
   let dirty = [];
   return {
-    load: async () => ({ items: [], dirty, lastSeq: 0, epoch: null }),
+    load: async () => ({ items: [], dirty, cursor: 0, epoch: null }),
     setEpoch: async () => {},
     putItem: async () => {},
     setDirty: async (ids) => void (dirty = [...ids]),
-    setLastSeq: async () => {},
+    setCursor: async () => {},
   };
 }
 
 const json = (body, init = {}) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" }, ...init });
-const empty = () => json({ items: [], seq: 0, epoch: "e1" });
-const saved = (init) => json({ id: "x", text: "t", ts: 1, at: 1, removed: false, seq: 1 }, init);
+// A reply to the one sync request: every change in it stored, or refused where `refuse` says so.
+const reply = (init, refuse = () => false) => {
+  const sent = JSON.parse(init.body ?? "{}").changes?.items ?? {};
+  const saved = {};
+  const rejected = {};
+  for (const [id, c] of Object.entries(sent)) {
+    if (refuse(id)) rejected[id] = { error: "bad" };
+    else saved[id] = { id, ...c, at: c.at ?? c.ts, seq: 1 };
+  }
+  return json({ epoch: "e1", cursor: 1, tables: { items: { rows: [], saved, rejected } } });
+};
 
-// Runs one sync with a queued local change so both the PUT and the GET are exercised. `respond(path, init)` is the fake network.
+// Runs one sync with a queued local change. `respond(path, init)` is the fake network.
 async function run(respond, { online = () => true, queued = true } = {}) {
   const seen = [];
   const sync = createSync({ storage: memStorage(), fetch: async (p, i) => respond(p, i ?? {}), onStatus: (s) => seen.push(s), online });
@@ -26,7 +35,7 @@ async function run(respond, { online = () => true, queued = true } = {}) {
   return { sync, status: sync.status(), seen };
 }
 
-const ok = (p, i) => (i.method === "PUT" ? saved() : empty());
+const ok = (p, i) => reply(i);
 const html = (init = {}) => new Response("<html>Sign in</html>", { status: 200, headers: { "content-type": "text/html" }, ...init });
 
 describe("failure kinds", () => {
@@ -66,11 +75,6 @@ describe("failure kinds", () => {
     expect(status.error).toEqual({ kind: "sign-in" });
   });
 
-  test("HTML on the pull (after pushes worked) is sign-in needed", async () => {
-    const { status } = await run((p, i) => (i.method === "PUT" ? saved() : html()));
-    expect(status.error).toEqual({ kind: "sign-in" });
-  });
-
   test("401 and 403 are sign-in needed", async () => {
     for (const code of [401, 403]) {
       const { status } = await run(() => new Response("no", { status: code }));
@@ -80,7 +84,7 @@ describe("failure kinds", () => {
   });
 
   test("a 401 on a push keeps the change queued", async () => {
-    const { status } = await run((p, i) => (i.method === "PUT" ? new Response("no", { status: 401 }) : empty()));
+    const { status } = await run(() => new Response("no", { status: 401 }));
     expect(status.pending).toBe(1);
     expect(status.error).toEqual({ kind: "sign-in" });
   });
@@ -90,18 +94,18 @@ describe("failure kinds", () => {
     expect(status.error).toEqual({ kind: "server-error", status: 502 });
   });
 
-  test("500 on the pull", async () => {
-    const { status } = await run((p, i) => (i.method === "PUT" ? saved() : new Response("oops", { status: 500 })));
+  test("500", async () => {
+    const { status } = await run(() => new Response("oops", { status: 500 }));
     expect(status.error).toEqual({ kind: "server-error", status: 500 });
   });
 
-  test("other 4xx on the pull carries the status", async () => {
-    const { status } = await run((p, i) => (i.method === "PUT" ? saved() : new Response("{}", { status: 404, headers: { "content-type": "application/json" } })));
+  test("other 4xx carries the status", async () => {
+    const { status } = await run(() => new Response("{}", { status: 404, headers: { "content-type": "application/json" } }));
     expect(status.error).toEqual({ kind: "client-error", status: 404 });
   });
 
-  test("a rejected push (4xx) is reported with its status and the rest still syncs", async () => {
-    const { status } = await run((p, i) => (i.method === "PUT" ? new Response('{"error":"bad"}', { status: 400, headers: { "content-type": "application/json" } }) : empty()));
+  test("a change the server refuses is reported as a client error and the rest still syncs", async () => {
+    const { status } = await run((p, i) => reply(i, () => true));
     expect(status.state).toBe("error");
     expect(status.error).toEqual({ kind: "client-error", status: 400 });
     expect(status.pending).toBe(1);
@@ -137,7 +141,7 @@ describe("failure kinds", () => {
   test("API requests ask not to follow redirects, so a login redirect can be recognised", async () => {
     const inits = [];
     await run((p, i) => (inits.push(i), ok(p, i)));
-    expect(inits.length).toBeGreaterThan(1);
+    expect(inits.length).toBeGreaterThan(0);
     for (const i of inits) expect(i.redirect).toBe("manual");
   });
 
@@ -168,7 +172,7 @@ describe("never synced", () => {
     const first = createSync({ storage, fetch: async (p, i) => ok(p, i) });
     await first.start();
     await first.syncNow();
-    const storageAfter = { ...storage, load: async () => ({ items: [], dirty: [], lastSeq: 0, epoch: "e1" }) };
+    const storageAfter = { ...storage, load: async () => ({ items: [], dirty: [], cursor: 0, epoch: "e1" }) };
     const second = createSync({ storage: storageAfter, fetch: async () => Promise.reject(new TypeError("x")) });
     await second.start();
     expect(second.status().neverSynced).toBeUndefined();
@@ -190,7 +194,7 @@ describe("lastFailure (debug detail)", () => {
 
   test("a network failure records the request, the error and onLine", async () => {
     const d = await detail(() => Promise.reject(new TypeError("Failed to fetch")), { online: () => false });
-    expect(d.request).toEqual({ method: "PUT", url: expect.stringMatching(/^\/api\/items\/s-/) });
+    expect(d.request).toEqual({ method: "POST", url: "/api/sync" });
     expect(d.error).toEqual({ name: "TypeError", message: "Failed to fetch" });
     expect(d.online).toBe(false);
     expect(d.response).toBeUndefined();
@@ -198,18 +202,13 @@ describe("lastFailure (debug detail)", () => {
 
   test("a 502 records status, status text, type, url, redirected, headers and the raw body", async () => {
     const d = await detail(() => html({ status: 502, statusText: "Bad Gateway" }));
-    expect(d.request.method).toBe("PUT");
+    expect(d.request.method).toBe("POST");
     expect(d.response.status).toBe(502);
     expect(d.response.statusText).toBe("Bad Gateway");
     expect(d.response.type).toBe("default");
     expect(d.response.redirected).toBe(false);
     expect(d.response.headers).toContainEqual(["content-type", "text/html"]);
     expect(d.response.body).toBe("<html>Sign in</html>");
-  });
-
-  test("a failing pull records a GET", async () => {
-    const d = await detail((p, i) => (i.method === "PUT" ? saved() : new Response("oops", { status: 500 })));
-    expect(d.request).toEqual({ method: "GET", url: "/api/items?since=0" });
   });
 
   test("an opaque redirect records what little there is", async () => {
@@ -224,10 +223,10 @@ describe("lastFailure (debug detail)", () => {
     expect(d.response.body).toBe("<html");
   });
 
-  test("a rejected push records its response", async () => {
-    const d = await detail((p, i) => (i.method === "PUT" ? new Response('{"error":"bad"}', { status: 400, headers: { "content-type": "application/json" } }) : empty()));
+  test("a refused change records what the server said about it", async () => {
+    const d = await detail((p, i) => reply(i, () => true));
     expect(d.response.status).toBe(400);
-    expect(d.response.body).toBe('{"error":"bad"}');
+    expect(JSON.parse(d.response.body)).toEqual([{ table: "items", id: expect.stringMatching(/^s-/), error: "bad" }]);
   });
 
   test("long bodies are truncated and flagged", async () => {

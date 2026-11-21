@@ -27,14 +27,14 @@ function newServer() {
 function memStorage() {
   const items = new Map();
   let dirty = [];
-  let lastSeq = 0;
+  let cursor = 0;
   let epoch = null;
   return {
-    load: async () => ({ items: [...items.values()].map((i) => ({ ...i })), dirty: [...dirty], lastSeq, epoch }),
+    load: async () => ({ items: [...items.values()].map((i) => ({ ...i })), dirty: [...dirty], cursor, epoch }),
     setEpoch: async (e) => void (epoch = e),
     putItem: async (i) => void items.set(i.id, { ...i }),
     setDirty: async (ids) => void (dirty = [...ids]),
-    setLastSeq: async (n) => void (lastSeq = n),
+    setCursor: async (n) => void (cursor = n),
   };
 }
 
@@ -147,6 +147,7 @@ describe("queue sync core", () => {
     await old.start();
     expect(old.allItems()).toEqual([]);
     await old.push("old style");
+    await old.syncNow();
     expect(old.stack().map((i) => i.text)).toEqual(["old style"]);
     expect(w.server.store.since(0).items.map((i) => i.text)).toEqual(["old style"]);
   });

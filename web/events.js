@@ -5,7 +5,8 @@ const CLOSED = 2;
 
 export function createEventStream({
   url,
-  onSeq,
+  onSync = () => {}, // the shared channel's one event: the server's counter moved, so run a sync
+  onSeq = () => {}, // the stack's and queue's own events, from before the channel was shared; the app no longer needs them
   onQueueSeq = () => {},
   make = (u) => new EventSource(u),
   schedule = (fn, ms) => setTimeout(fn, ms),
@@ -21,8 +22,9 @@ export function createEventStream({
     close();
     const s = make(url);
     source = s;
+    s.addEventListener("sync", onSync);
     s.addEventListener("seq", onSeq);
-    s.addEventListener("qseq", onQueueSeq); // the queue's own event; a client that does not know it never hears it
+    s.addEventListener("qseq", onQueueSeq);
     s.addEventListener("open", () => {
       attempt = 0;
     });

@@ -103,7 +103,11 @@ Enter the values as plain text, with nothing after them. In Dockhand's variables
 - Conflicts resolve by arrival: the last change the server receives for an item wins, not the change made last. If a device was offline when it removed an item and reconnects after another device restored it, the older removal wins. Both devices then show the same thing.
 - A change the server refuses (a 4xx response) stays on the device and shows as "Sync problem" without blocking other changes. If the device's own storage fails, it says so and keeps working from memory.
 
-API (JSON): `GET /api/items?since=<seq>`, `PUT /api/items/<id>`, `GET /api/queue?since=<seq>`, `PUT /api/queue/<id>`, `GET /api/events` (event stream; `seq` for the stack, `qseq` for the queue), `GET /api/version`, `GET /healthz`.
+API (JSON): `POST /api/sync` (the one sync call, below), `GET /api/events` (event stream; `sync` carries the shared counter), `GET /api/version`, `GET /healthz`. Kept so that copies of the app cached before the shared channel keep working, and not used by the current app: `GET /api/items?since=<seq>`, `PUT /api/items/<id>`, `GET /api/queue?since=<seq>`, `PUT /api/queue/<id>`, and the `seq` / `qseq` stream events.
+
+### One sync channel
+
+Every synced table (the stack, Later, and whatever comes next) shares one channel. A device sends its last cursor and its pending changes, `{epoch, cursor, changes: {items: {id: row}, queue: {id: row}}}`, to `POST /api/sync`; the server applies them (each through the same checks, event logging and time clamping as before) and answers with every row changed since the cursor, plus what it stored and what it refused, per table. One counter, shared by all tables, numbers every change; one `sync` stream event announces it. A change the server refuses is reported per row, so it never blocks the others. The client sends at most 100 changes per request. See `docs/superpowers/specs/2026-11-21-one-sync-channel-design.md` for the contract and the reasoning. To add a table: add it to `SYNCED_TABLES` and the registry in `server/store.ts`, and call `hub.table(...)` on the client (`web/core.js`).
 
 ## & Pop, and Done today
 
@@ -120,7 +124,7 @@ An edit is sent as a write marked `edit: true`. Without the mark the server keep
 
 A pile of things to do later, in no particular order (not a line: nothing about it means "next"). The newest addition shows on top. On screen it is labelled **Later**; that label is one constant (`QUEUE_LABEL` in `web/queue.js`).
 
-- **A separate structure from the stack.** Its own table (`queue`), API (`/api/queue`), sync state, change numbering, IndexedDB database (`interrupt-stack-queue`) and stream event (`qseq`). `/api/items`, the `seq` stream event and the stack's IndexedDB are exactly as before and contain no queue items, so a copy of the app cached from before the queue existed simply never sees it, and keeps working.
+- **A separate structure from the stack.** Its own table (`queue`) and IndexedDB database (`interrupt-stack-queue`), but the same sync channel as the stack (one request, one counter, one status). `/api/items`, `/api/queue` and the `seq` / `qseq` stream events are kept as they were for copies of the app cached earlier, and `/api/items` still contains no queue items.
 - **Layout.** Wide screens (700px and up) show two columns, Stack on the left and Later on the right. On a phone they are side-by-side panes: swipe sideways, or tap the "Later 3 ›" tab (Stack side) and "‹ Stack" tab (Later side). Done today stays under the stack. Both panes are reachable by keyboard (focusing a control in the other pane scrolls it into view).
 - **Its own input.** The Later pane has its own text box and **Add** button (Enter adds). The **Push / & Pop** control is unchanged.
 - **Start and Drop.** Each row has **Start**, which puts it on top of the stack, and **Drop**, which removes it (with the usual Undo, which puts it back in the queue). Start has no Undo.
