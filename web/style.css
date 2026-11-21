@@ -242,3 +242,4 @@ button.note-add:hover:not(:disabled){border-color:var(--line)}
 .note-fields input.note-time{font-family:var(--font-mono);width:9em}
 .note-fields input.bad{border-color:var(--warn);outline:1px solid var(--warn)}
 .note-meta{margin:4px 0 0;font-size:.75rem;color:var(--muted)}
+.note-linked{margin:0 0 8px;overflow-wrap:anywhere;font-size:.9375rem}

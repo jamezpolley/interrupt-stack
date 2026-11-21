@@ -221,6 +221,7 @@ function openNote(id) {
   if (!n || n.removed) return;
   noteEditing = id;
   $("note-text").value = n.text;
+  renderLinked($("note-linked"), n.text); // the row is a button, so its links are plain text; here they work
   $("note-time").value = clockText(n.ts);
   $("note-meta").textContent = dateText(n.ts) === dateText(Date.now()) ? "" : `On ${dateText(n.ts)}. Only the time of day can be changed here.`;
   checkNote();

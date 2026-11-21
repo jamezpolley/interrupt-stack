@@ -139,7 +139,7 @@ A short text entry (not empty, up to 200 characters) that never touches the stac
 
 - **A separate table.** `notes` (ids `n-<x>`) on the same sync channel (`SYNCED_TABLES` entry plus `hub.table("notes", ...)`), last write wins, with tombstones (`removed`). It has its own IndexedDB database (`interrupt-stack-notes`). Notes are not counted in stack depth, the `live` metric, the timeline or time on top, and are never pushed or popped.
 - **Events.** One `note` event when a note is created (its text, dated at the note's time). An edit logs an `edit` event with `detail` (`{text?, ts?}` from/to) and sets `edited_at`, the same way item edits do, and is sent with `edit: true` so a stale copy cannot undo it. Removing logs nothing.
-- **Row.** One time (in the Ended column), a dash for the duration, a quiet "note" label. Links in the text work in the edit panel's source text only; the row itself is a button, like any Done today row.
+- **Row.** One time (in the Ended column), a dash for the duration, a quiet "note" label. The row is a button like any Done today row, so links in the text are plain text there and are clickable in the panel that opens.
 - **Edit.** Tapping a note opens a small panel with its text and its time (24-hour `HH:MM` or `HH:MM:SS`, on the note's own day; the day buttons can be added once they are merged). No timeline, no Push again.
 - **Static version.** Notes live in the browser only.
 
