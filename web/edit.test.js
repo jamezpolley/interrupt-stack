@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { applyDraft, changesFrom, parseEdited, rowTargets, sideEffects, validateDraft, clockText } from "./edit.js";
+import { applyDraft, changesFrom, parseEdited, shiftDate, shiftRowTime, canShiftLater, rowTargets, sideEffects, validateDraft, clockText, dateText } from "./edit.js";
 
 const m = (h, min = 0) => new Date(2026, 10, 19, h, min).getTime();
 const item = (id, ts, at, removed = true, text = id) => ({ id, text, ts, at, removed, seq: 1 });
@@ -93,5 +93,65 @@ describe("clockText", () => {
   test("is HH:MM:SS, 24 hour", () => {
     expect(clockText(new Date(2026, 10, 19, 7, 5, 9).getTime())).toBe("07:05:09");
     expect(clockText(new Date(2026, 10, 19, 0, 0, 0).getTime())).toBe("00:00:00");
+  });
+});
+
+describe("shiftDate", () => {
+  test("moves a day either way", () => {
+    expect(shiftDate("2026-11-19", -1)).toBe("2026-11-18");
+    expect(shiftDate("2026-11-19", 1)).toBe("2026-11-20");
+  });
+  test("crosses month, year and leap-day boundaries", () => {
+    expect(shiftDate("2026-12-01", -1)).toBe("2026-11-30");
+    expect(shiftDate("2026-03-01", -1)).toBe("2026-02-28");
+    expect(shiftDate("2028-03-01", -1)).toBe("2028-02-29");
+    expect(shiftDate("2026-01-01", -1)).toBe("2025-12-31");
+    expect(shiftDate("2025-12-31", 1)).toBe("2026-01-01");
+  });
+  test("crosses DST changes without skipping or repeating a day", () => {
+    for (const start of ["2026-03-07", "2026-03-28", "2026-04-04", "2026-10-03", "2026-10-24", "2026-11-01"]) {
+      let d = start;
+      const seen = [];
+      for (let i = 0; i < 4; i++) (d = shiftDate(d, 1)), seen.push(d);
+      expect(new Set(seen).size).toBe(4);
+      for (let i = 0; i < 4; i++) d = shiftDate(d, -1);
+      expect(d).toBe(start);
+    }
+  });
+  test("feeds parseEdited, keeping the time of day", () => {
+    const t = new Date(2026, 10, 19, 9, 0, 30).getTime();
+    const out = parseEdited(t, "09:00", shiftDate(dateText(t), -1));
+    expect(dateText(out)).toBe(shiftDate(dateText(t), -1));
+    expect(clockText(out)).toBe("09:00:30");
+  });
+  test("a bad date is null", () => {
+    expect(shiftDate("nope", 1)).toBeNull();
+  });
+});
+
+describe("shiftRowTime", () => {
+  const now = new Date(2026, 10, 21, 15, 0, 0).getTime();
+  const orig = new Date(2026, 10, 21, 13, 3, 30, 250).getTime();
+  test("moves a time made today to yesterday, keeping the clock", () => {
+    const out = shiftRowTime(orig, "13:03:30", orig, -1);
+    expect(dateText(out)).toBe("2026-11-20");
+    expect(clockText(out)).toBe("13:03:30");
+  });
+  test("uses the typed clock and the current (drafted) day", () => {
+    const drafted = new Date(2026, 10, 20, 13, 3, 30).getTime();
+    const out = shiftRowTime(orig, "09:15", drafted, -1);
+    expect(dateText(out)).toBe("2026-11-19");
+    expect(clockText(out)).toBe("09:15:30");
+  });
+  test("a junk clock is null", () => {
+    expect(shiftRowTime(orig, "nope", orig, -1)).toBeNull();
+  });
+});
+
+describe("canShiftLater", () => {
+  const now = new Date(2026, 10, 21, 0, 5, 0).getTime();
+  test("not on today (or later), yes on earlier days", () => {
+    expect(canShiftLater(new Date(2026, 10, 21, 0, 1).getTime(), now)).toBe(false);
+    expect(canShiftLater(new Date(2026, 10, 20, 23, 59).getTime(), now)).toBe(true);
   });
 });
