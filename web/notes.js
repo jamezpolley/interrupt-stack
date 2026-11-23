@@ -63,10 +63,16 @@ export function createNotes({ storage, stack, now = () => Date.now(), onChange =
       return next;
     },
 
-    /** A tombstone, so the removal syncs. (No screen offers this yet.) */
+    /** Delete a note: a tombstone, so the removal syncs. */
     async remove(id) {
       const n = items.get(id);
       if (n && !n.removed) await setNote({ ...n, removed: true });
+    },
+
+    /** Undo a delete. */
+    async restore(id) {
+      const n = items.get(id);
+      if (n && n.removed) await setNote({ ...n, removed: false });
     },
   };
 }

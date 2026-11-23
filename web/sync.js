@@ -4,8 +4,10 @@
 // Items are replaced, never mutated, so object identity tells us whether an item changed while a request was in flight.
 import { createHub } from "./core.js";
 
-// What the stack sends for one item. `pendingEdit` is local: it makes the server take the new text and times.
-const toWire = (it) => ({ text: it.text, ts: it.ts, removed: it.removed, at: it.at, ...(it.origin ? { origin: it.origin } : {}), ...(it.pendingEdit ? { edit: true } : {}) });
+// What the stack sends for one item. `pendingEdit` is local: it makes the server take the new text and times. `deleted` is
+// sent only on a row that has it (true when deleted, false once undone); a row never deleted leaves it out, and the server
+// never clears a flag a write leaves out.
+const toWire = (it) => ({ text: it.text, ts: it.ts, removed: it.removed, at: it.at, ...(it.origin ? { origin: it.origin } : {}), ...(it.pendingEdit ? { edit: true } : {}), ...(it.deleted !== undefined ? { deleted: it.deleted } : {}) });
 
 // `local` is the static version: nothing is ever sent anywhere, so there is no pending set and no network use.
 export function createSync({ storage, fetch, now = () => Date.now(), online = () => true, onChange = () => {}, onStatus = () => {}, local = false }) {
@@ -22,7 +24,7 @@ export function createSync({ storage, fetch, now = () => Date.now(), online = ()
   };
 
   const currentStack = () =>
-    [...items.values()].filter((i) => !i.removed).sort((a, b) => b.ts - a.ts || (a.id < b.id ? 1 : -1));
+    [...items.values()].filter((i) => !i.removed && !i.deleted).sort((a, b) => b.ts - a.ts || (a.id < b.id ? 1 : -1));
 
   return {
     async start() {
@@ -34,12 +36,12 @@ export function createSync({ storage, fetch, now = () => Date.now(), online = ()
 
     stack: currentStack,
 
-    /** Every item, including removed ones, for views of what has been done. */
+    /** Every item, including removed ones, for views of what has been done. Deleted items are left out: they never happened. */
     allItems() {
-      return [...items.values()];
+      return [...items.values()].filter((i) => !i.deleted);
     },
 
-    /** Whether an item with this id exists here, removed or not. */
+    /** Whether an item with this id exists here, removed or deleted or not. */
     has: (id) => items.has(id),
 
     /**
@@ -87,7 +89,7 @@ export function createSync({ storage, fetch, now = () => Date.now(), online = ()
      */
     async edit(id, fields = {}) {
       const it = items.get(id);
-      if (!it || !it.removed) return null;
+      if (!it || !it.removed || it.deleted) return null;
       const next = { ...it };
       const text = typeof fields.text === "string" ? fields.text.trim() : "";
       if (text && text.length <= 200) next.text = text;
@@ -96,6 +98,24 @@ export function createSync({ storage, fetch, now = () => Date.now(), online = ()
       if (next.text === it.text && next.ts === it.ts && next.at === it.at) return null;
       next.edited_at = now();
       if (!local) next.pendingEdit = true;
+      await setItem(next);
+      return next;
+    },
+
+    /** Delete an item (on the stack or finished): hidden everywhere as if never made. Null if unknown or already deleted. */
+    async delete(id) {
+      const it = items.get(id);
+      if (!it || it.deleted) return null;
+      const next = { ...it, deleted: true };
+      await setItem(next);
+      return next;
+    },
+
+    /** Undo a delete. */
+    async undelete(id) {
+      const it = items.get(id);
+      if (!it || !it.deleted) return null;
+      const next = { ...it, deleted: false };
       await setItem(next);
       return next;
     },

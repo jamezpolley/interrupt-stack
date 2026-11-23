@@ -117,11 +117,11 @@ describe("editing a note", () => {
     expect(near.tables.notes.saved["n-aaaa"].ts).toBe(NOW);
   });
 
-  test("removing a note keeps a tombstone that syncs, and logs nothing more", () => {
+  test("removing a note keeps a tombstone that syncs, and logs a delete event", () => {
     const s = mk();
     sync(s, 0, { notes: { "n-aaaa": note() } });
     const r = sync(s, 1, { notes: { "n-aaaa": { text: "a note", ts: T, removed: true } } });
     expect(r.tables.notes.rows[0]).toMatchObject({ id: "n-aaaa", removed: true });
-    expect(s.log()).toHaveLength(1);
+    expect(s.log().map((e) => e.op)).toEqual(["note", "delete"]);
   });
 });
