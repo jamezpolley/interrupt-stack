@@ -7,9 +7,10 @@ import { createEventStream } from "./events.js";
 import { canUpdateNow, describeServerUpdate, forceRefresh, readVersionInfo, requestServerCheck, updateServerNow } from "./refresh.js";
 import { doneTodayEntries } from "./today.js";
 import { describeRow, doneRow, formatClock, formatStart, timeline, totalText, wasEdited } from "./times.js";
-import { applyDraft, changesFrom, clockText, dateText, parseEdited, canShiftLater, shiftRowTime, rowTargets, sideEffectText, sideEffects, validateDraft } from "./edit.js";
+import { applyDraft, changesFrom, clockText, dateText, parseEdited, canShiftLater, noteDayShift, shiftRowTime, rowTargets, sideEffectText, sideEffects, validateDraft } from "./edit.js";
 import { pushAgain } from "./again.js";
 import { displayText, renderLinked } from "./links.js";
+import { reconcileList } from "./reconcile.js";
 import { formatFailure } from "./debug-text.js";
 import { offersSignIn, shortStatus, statusLabel, statusMessage, unsentWords } from "./status-text.js";
 import { LOCAL_ONLY } from "./config.js";
@@ -69,152 +70,262 @@ function renderStatus({ state, pending, storageFailed, error, neverSynced }) {
   storageNoteShown = !!storageFailed;
 }
 
+// Only touch a text node's value when it actually differs, so nothing flickers or loses a selection.
+function setText(el, text) {
+  if (el.textContent !== text) el.textContent = text;
+}
+
+// The Working-on card and the empty message are built once and kept; render() only updates their contents.
+const nowCard = (() => {
+  const card = document.createElement("div");
+  card.className = "now";
+  const l = document.createElement("div");
+  l.className = "label";
+  l.textContent = "Working on";
+  const t = document.createElement("div");
+  t.className = "now-text";
+  const foot = document.createElement("div");
+  foot.className = "now-foot";
+  const age = document.createElement("span");
+  age.className = "age";
+  const pop = document.createElement("button");
+  pop.type = "button";
+  pop.className = "primary";
+  pop.textContent = "Pop";
+  pop.addEventListener("click", () => card._item && removeItem(card._item));
+  foot.append(age, pop);
+  card.append(l, t, foot);
+  card._parts = { t, age };
+  return card;
+})();
+const emptyCard = (() => {
+  const e = document.createElement("div");
+  e.className = "empty";
+  return e;
+})();
+
+function updateNowCard(top) {
+  nowCard._item = top;
+  const { t, age } = nowCard._parts;
+  if (nowCard._text !== top.text) {
+    renderLinked(t, top.text);
+    nowCard._text = top.text;
+  }
+  setText(age, `Pushed ${formatStart(top.ts, Date.now())}`);
+}
+
+// ---- list rows: built once per item, then updated in place (see reconcile.js) ----
+
+function stackRowCreate() {
+  const li = document.createElement("li");
+  const d = document.createElement("span");
+  d.className = "depth";
+  const tx = document.createElement("span");
+  tx.className = "item-text";
+  const ag = document.createElement("span");
+  ag.className = "item-age";
+  const x = document.createElement("button");
+  x.type = "button";
+  x.className = "drop";
+  x.textContent = "Drop";
+  x.addEventListener("click", () => removeItem(li._item));
+  li.append(d, tx, ag, x);
+  li._parts = { d, tx, ag, x };
+  return li;
+}
+
+function stackRowUpdate(li, { it, depth }) {
+  li._item = it;
+  const { d, tx, ag, x } = li._parts;
+  setText(d, String(depth));
+  if (li._text !== it.text) {
+    renderLinked(tx, it.text);
+    x.setAttribute("aria-label", `Drop ${displayText(it.text)} from the stack`);
+    li._text = it.text;
+  }
+  setText(ag, formatStart(it.ts, Date.now()));
+}
+
+function queueRowCreate() {
+  const li = document.createElement("li");
+  const tx = document.createElement("span");
+  tx.className = "item-text";
+  const go = document.createElement("button");
+  go.type = "button";
+  go.className = "start";
+  go.textContent = "Start";
+  go.addEventListener("click", () => queue.promote(li._item.id));
+  const x = document.createElement("button");
+  x.type = "button";
+  x.className = "drop";
+  x.textContent = "Drop";
+  x.addEventListener("click", async () => {
+    const it = li._item;
+    await queue.drop(it.id);
+    offerUndo(it, "queue");
+  });
+  li.append(tx, go, x);
+  li._parts = { tx, go, x };
+  return li;
+}
+
+function queueRowUpdate(li, it) {
+  li._item = it;
+  const { tx, go, x } = li._parts;
+  if (li._text !== it.text) {
+    renderLinked(tx, it.text);
+    go.setAttribute("aria-label", `Start ${displayText(it.text)}`);
+    x.setAttribute("aria-label", `Drop ${displayText(it.text)} from ${QUEUE_LABEL}`);
+    li._text = it.text;
+  }
+}
+
+// A Done today row is a button (opens its details) when it has a real end time, and a plain div when it has none.
+// The li and its cells persist; only if `at` appears or goes away is the body element swapped.
+function doneRowCreate() {
+  return document.createElement("li");
+}
+
+function makeDoneBody(li, isButton) {
+  const body = document.createElement(isButton ? "button" : "div");
+  body.className = "done-body";
+  if (isButton) {
+    body.type = "button";
+    body.setAttribute("aria-haspopup", "dialog");
+    body.addEventListener("click", () => openDetails(li._item.id));
+  }
+  const tx = document.createElement("span");
+  tx.className = "item-text";
+  const start = document.createElement("span");
+  start.className = "item-age col-start";
+  const end = document.createElement("span");
+  end.className = "item-age";
+  const dur = document.createElement("span");
+  dur.className = "item-age";
+  body.append(tx, start, end, dur);
+  li._parts = { tx, start, end, dur };
+  li._sig = null;
+  return body;
+}
+
+function doneRowUpdate(li, { it, row, edited }) {
+  li._item = it;
+  const isButton = Number.isFinite(it.at);
+  if (li._isButton !== isButton) {
+    const hadFocus = li.contains(document.activeElement);
+    const body = makeDoneBody(li, isButton);
+    li.replaceChildren(body);
+    li._isButton = isButton;
+    li._body = body;
+    if (hadFocus && isButton) body.focus({ preventScroll: true });
+  }
+  const body = li._body;
+  if (isButton) body.dataset.itemId = it.id;
+  else delete body.dataset.itemId;
+  const { tx, start, end, dur } = li._parts;
+  const sig = `${it.text}\u0000${edited ? "edited" : ""}`;
+  if (li._sig !== sig) {
+    renderLinked(tx, it.text, { links: false }); // inside a button: the same label as plain text
+    if (edited) {
+      const mark = document.createElement("small");
+      mark.className = "edited-tag";
+      mark.textContent = " edited";
+      tx.appendChild(mark);
+    }
+    if (isButton) body.setAttribute("aria-label", `Details for ${displayText(it.text)}`);
+    li._sig = sig;
+  }
+  setText(start, row.start);
+  setText(end, row.end);
+  setText(dur, row.duration);
+}
+
 function render() {
   const stack = sync.stack();
-  $("depth").textContent = `${stack.length} deep`;
+  setText($("depth"), `${stack.length} deep`);
 
   const wrap = $("now-wrap");
-  wrap.textContent = "";
   if (!stack.length) {
-    const e = document.createElement("div");
-    e.className = "empty";
-    e.textContent = showingNeverSynced
-      ? "Never synced, nothing to show yet"
-      : "Empty.";
-    wrap.appendChild(e);
+    if (wrap.firstChild !== emptyCard) wrap.replaceChildren(emptyCard);
+    setText(emptyCard, showingNeverSynced ? "Never synced, nothing to show yet" : "Empty.");
   } else {
-    const top = stack[0];
-    const card = document.createElement("div");
-    card.className = "now";
-    const l = document.createElement("div");
-    l.className = "label";
-    l.textContent = "Working on";
-    const t = document.createElement("div");
-    t.className = "now-text";
-    renderLinked(t, top.text);
-    const foot = document.createElement("div");
-    foot.className = "now-foot";
-    const a = document.createElement("span");
-    a.className = "age";
-    a.textContent = `Pushed ${formatStart(top.ts, Date.now())}`;
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "primary";
-    b.textContent = "Pop";
-    b.addEventListener("click", () => removeItem(top));
-    foot.append(a, b);
-    card.append(l, t, foot);
-    wrap.appendChild(card);
+    if (wrap.firstChild !== nowCard) wrap.replaceChildren(nowCard);
+    updateNowCard(stack[0]);
   }
 
   $("swap-btn").disabled = stack.length === 0;
 
   const all = sync.allItems();
   const done = doneTodayEntries(all, notes ? notes.notes() : [], Date.now());
-  const doneList = $("done");
-  doneList.textContent = "";
   $("done-cols").hidden = done.length === 0;
-  for (const entry of done) {
-    if (entry.kind === "note") {
-      doneList.appendChild(noteRow(entry.note));
-      continue;
-    }
-    const it = entry.item;
-    const li = document.createElement("li");
-    const row = doneRow(it, all, undefined, Date.now());
-    // A row with a real end time opens its details; one without (stored before end times existed) is plain text.
-    const body = document.createElement(Number.isFinite(it.at) ? "button" : "div");
-    body.className = "done-body";
-    if (body.tagName === "BUTTON") {
-      body.type = "button";
-      body.dataset.itemId = it.id;
-      body.setAttribute("aria-label", `Details for ${displayText(it.text)}`);
-      body.setAttribute("aria-haspopup", "dialog");
-      body.addEventListener("click", () => openDetails(it.id));
-    }
-    const tx = document.createElement("span");
-    tx.className = "item-text";
-    renderLinked(tx, it.text, { links: false }); // inside a button: the same label as plain text
-    if (wasEdited(it, all)) {
-      const mark = document.createElement("small");
-      mark.className = "edited-tag";
-      mark.textContent = " edited";
-      tx.appendChild(mark);
-    }
-    const start = document.createElement("span");
-    start.className = "item-age col-start";
-    start.textContent = row.start;
-    const end = document.createElement("span");
-    end.className = "item-age";
-    end.textContent = row.end;
-    const dur = document.createElement("span");
-    dur.className = "item-age";
-    dur.textContent = row.duration;
-    body.append(tx, start, end, dur);
-    li.appendChild(body);
-    doneList.appendChild(li);
-  }
+  const nowMs = Date.now();
+  reconcileList(
+    $("done"),
+    done.map((e) =>
+      e.kind === "note" ? { kind: "note", note: e.note } : { kind: "item", it: e.item, row: doneRow(e.item, all, undefined, nowMs), edited: wasEdited(e.item, all) },
+    ),
+    {
+      key: (e) => (e.kind === "note" ? `n:${e.note.id}` : `i:${e.it.id}`),
+      create: (e) => (e.kind === "note" ? noteRowCreate() : doneRowCreate()),
+      update: (li, e) => (e.kind === "note" ? noteRowUpdate(li, e.note) : doneRowUpdate(li, e)),
+    },
+  );
 
   renderQueue();
 
-  const under = $("under");
-  under.textContent = "";
   const rest = stack.slice(1);
   $("under-wrap").hidden = rest.length === 0;
-  rest.forEach((it, i) => {
-    const li = document.createElement("li");
-    const d = document.createElement("span");
-    d.className = "depth";
-    d.textContent = String(stack.length - 1 - i);
-    const tx = document.createElement("span");
-    tx.className = "item-text";
-    renderLinked(tx, it.text);
-    const ag = document.createElement("span");
-    ag.className = "item-age";
-    ag.textContent = formatStart(it.ts, Date.now());
-    const x = document.createElement("button");
-    x.type = "button";
-    x.className = "drop";
-    x.textContent = "Drop";
-    x.setAttribute("aria-label", `Drop ${displayText(it.text)} from the stack`);
-    x.addEventListener("click", () => removeItem(it));
-    li.append(d, tx, ag, x);
-    under.appendChild(li);
+  reconcileList($("under"), rest.map((it, i) => ({ it, depth: stack.length - 1 - i })), {
+    key: (f) => f.it.id,
+    create: stackRowCreate,
+    update: stackRowUpdate,
   });
 }
 
 // A note in Done today: one time (in the Ended column; the Started column stays empty), a dash for the duration, a quiet
 // "note" label. Tapping it opens a small panel to change its text and time.
-function noteRow(n) {
+// A note row in Done today: a button that opens the note panel. Built once, then updated in place like the item rows.
+function noteRowCreate() {
   const li = document.createElement("li");
   const body = document.createElement("button");
   body.type = "button";
   body.className = "done-body";
-  body.dataset.noteId = n.id;
-  body.setAttribute("aria-label", `Note: ${displayText(n.text)}. Edit`);
   body.setAttribute("aria-haspopup", "dialog");
-  body.addEventListener("click", () => openNote(n.id));
+  body.addEventListener("click", () => openNote(li._note.id));
   const tx = document.createElement("span");
   tx.className = "item-text";
-  renderLinked(tx, n.text, { links: false });
-  const tag = document.createElement("small");
-  tag.className = "note-tag";
-  tag.textContent = n.edited_at != null ? "note, edited" : "note";
-  tx.appendChild(tag);
   const start = document.createElement("span");
   start.className = "item-age col-start";
   const time = document.createElement("span");
   time.className = "item-age";
-  time.textContent = formatStart(n.ts, Date.now());
   const dur = document.createElement("span");
   dur.className = "item-age";
   dur.textContent = "\u2014";
   body.append(tx, start, time, dur);
   li.appendChild(body);
+  li._parts = { body, tx, time };
   return li;
 }
 
+function noteRowUpdate(li, n) {
+  li._note = n;
+  const { body, tx, time } = li._parts;
+  body.dataset.noteId = n.id;
+  const sig = `${n.text}\u0000${n.edited_at != null ? "edited" : ""}`;
+  if (li._sig !== sig) {
+    renderLinked(tx, n.text, { links: false });
+    const tag = document.createElement("small");
+    tag.className = "note-tag";
+    tag.textContent = n.edited_at != null ? "note, edited" : "note";
+    tx.appendChild(tag);
+    body.setAttribute("aria-label", `Note: ${displayText(n.text)}. Edit`);
+    li._sig = sig;
+  }
+  setText(time, formatStart(n.ts, Date.now()));
+}
+
 let noteEditing = null; // id of the note whose panel is open
+let noteDayMs = 0; // the day shown in the panel (moved by the day buttons), as a time on that day
 
 function openNote(id) {
   const n = notes.get(id);
@@ -223,17 +334,17 @@ function openNote(id) {
   $("note-text").value = n.text;
   renderLinked($("note-linked"), n.text); // the row is a button, so its links are plain text; here they work
   $("note-time").value = clockText(n.ts);
-  $("note-meta").textContent = dateText(n.ts) === dateText(Date.now()) ? "" : `On ${dateText(n.ts)}. Only the time of day can be changed here.`;
+  noteDayMs = n.ts;
   checkNote();
   $("note-dialog").showModal();
 }
 
-// What the panel would save, or why not. The time keeps the note's own day (the day buttons can come later).
+// What the panel would save, or why not. The time is on the day the day buttons have moved it to.
 function noteDraft() {
   const n = noteEditing && notes.get(noteEditing);
   if (!n) return null;
   const text = $("note-text").value.trim();
-  const ts = parseEdited(n.ts, $("note-time").value);
+  const ts = parseEdited(n.ts, $("note-time").value, dateText(noteDayMs));
   const problems = [];
   if (!text) problems.push("Text cannot be empty.");
   else if (text.length > NOTE_MAX) problems.push(`Text is over ${NOTE_MAX} characters.`);
@@ -246,6 +357,9 @@ function checkNote() {
   const d = noteDraft();
   if (!d) return;
   $("note-time").classList.toggle("bad", d.ts === null);
+  const now = Date.now();
+  $("note-day-next").disabled = !canShiftLater(noteDayMs, now);
+  $("note-meta").textContent = dateText(noteDayMs) === dateText(now) ? "Today" : `On ${dateText(noteDayMs)}`;
   const p = $("note-problems");
   p.hidden = !d.problems.length;
   p.textContent = d.problems.join(" ");
@@ -274,31 +388,7 @@ function renderQueue() {
   const items = queue ? queue.queue() : [];
   updatePill(items.length);
   $("queue-empty").hidden = items.length > 0;
-  const list = $("queue");
-  list.textContent = "";
-  for (const it of items) {
-    const li = document.createElement("li");
-    const tx = document.createElement("span");
-    tx.className = "item-text";
-    renderLinked(tx, it.text);
-    const go = document.createElement("button");
-    go.type = "button";
-    go.className = "start";
-    go.textContent = "Start";
-    go.setAttribute("aria-label", `Start ${displayText(it.text)}`);
-    go.addEventListener("click", () => queue.promote(it.id));
-    const x = document.createElement("button");
-    x.type = "button";
-    x.className = "drop";
-    x.textContent = "Drop";
-    x.setAttribute("aria-label", `Drop ${displayText(it.text)} from ${QUEUE_LABEL}`);
-    x.addEventListener("click", async () => {
-      await queue.drop(it.id);
-      offerUndo(it, "queue");
-    });
-    li.append(tx, go, x);
-    list.appendChild(li);
-  }
+  reconcileList($("queue"), items, { key: (it) => it.id, create: queueRowCreate, update: queueRowUpdate });
 }
 
 // Everything on screen that names the queue takes its words from QUEUE_LABEL (queue.js), so renaming is one line.
@@ -705,6 +795,17 @@ async function init() {
   $("note-text").addEventListener("input", checkNote);
   $("note-time").addEventListener("input", checkNote);
   $("note-save").addEventListener("click", saveNote);
+  for (const [id, step] of [["note-day-back", -1], ["note-day-next", 1]]) {
+    $(id).addEventListener("click", () => {
+      const n = noteEditing && notes.get(noteEditing);
+      if (!n) return;
+      const ms = noteDayShift(n.ts, $("note-time").value, noteDayMs, step, Date.now());
+      $("note-time").classList.toggle("bad", ms === null);
+      if (ms === null) return;
+      noteDayMs = ms;
+      checkNote();
+    });
+  }
   $("note-close").addEventListener("click", () => $("note-dialog").close());
   $("note-dialog").addEventListener("click", (ev) => {
     if (ev.target === $("note-dialog")) $("note-dialog").close();

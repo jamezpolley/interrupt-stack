@@ -67,6 +67,10 @@
         <input id="note-text" class="title-edit" maxlength="200" autocomplete="off">
         <label for="note-time">Time, 24 hour HH:MM or HH:MM:SS</label>
         <input id="note-time" class="clock note-time" type="text" inputmode="numeric" autocomplete="off" placeholder="HH:MM:SS" maxlength="8">
+        <div class="note-days">
+          <button type="button" class="daybtn" id="note-day-back" aria-label="One day earlier">− day</button>
+          <button type="button" class="daybtn" id="note-day-next" aria-label="One day later">+1 day</button>
+        </div>
         <p class="note-meta" id="note-meta"></p>
       </div>
       <div class="details-foot">
