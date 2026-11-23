@@ -6,7 +6,7 @@ import { currentPane, pillFor } from "./pane.js";
 import { createEventStream } from "./events.js";
 import { canUpdateNow, describeServerUpdate, forceRefresh, readVersionInfo, requestServerCheck, updateServerNow } from "./refresh.js";
 import { doneTodayEntries } from "./today.js";
-import { describeRow, doneRow, formatClock, formatStart, timeline, totalText, wasEdited } from "./times.js";
+import { describeRow, doneRow, formatClock, formatStart, timelineOrBasic, totalText, wasEdited } from "./times.js";
 import { applyDraft, changesFrom, clockText, dateText, parseEdited, canShiftLater, noteDayShift, shiftRowTime, rowTargets, sideEffectText, sideEffects, validateDraft } from "./edit.js";
 import { pushAgain } from "./again.js";
 import { displayText, renderLinked } from "./links.js";
@@ -223,9 +223,9 @@ function makeDoneBody(li, isButton) {
   return body;
 }
 
-function doneRowUpdate(li, { it, row, edited }) {
+function doneRowUpdate(li, { it, row, edited, openable }) {
   li._item = it;
-  const isButton = Number.isFinite(it.at);
+  const isButton = openable; // every finished entry opens its details, even one with no timeline to derive, so it can be corrected
   if (li._isButton !== isButton) {
     const hadFocus = li.contains(document.activeElement);
     const body = makeDoneBody(li, isButton);
@@ -277,7 +277,7 @@ function render() {
   reconcileList(
     $("done"),
     done.map((e) =>
-      e.kind === "note" ? { kind: "note", note: e.note } : { kind: "item", it: e.item, row: doneRow(e.item, all, undefined, nowMs), edited: wasEdited(e.item, all) },
+      e.kind === "note" ? { kind: "note", note: e.note } : { kind: "item", it: e.item, row: doneRow(e.item, all, undefined, nowMs), edited: wasEdited(e.item, all), openable: !!timelineOrBasic(e.item, all) },
     ),
     {
       key: (e) => (e.kind === "note" ? `n:${e.note.id}` : `i:${e.it.id}`),
@@ -450,7 +450,7 @@ let ed = null; // {draft: {texts, times}} while editing: only what was changed, 
 function openDetails(id) {
   const all = sync.allItems();
   const item = all.find((i) => i.id === id);
-  if (!item || !timeline(item, all)) return;
+  if (!item || !timelineOrBasic(item, all)) return;
   detailsFor_id = id;
   ed = null;
   renderDetails();
@@ -473,13 +473,13 @@ function renderDetails() {
   const origX = base.find((i) => i.id === detailsFor_id);
   if (!origX) return $("details-dialog").close();
   let x = all.find((i) => i.id === detailsFor_id);
-  let t = timeline(x, all);
+  let t = timelineOrBasic(x, all);
   let src = all;
   // A draft that makes no valid history (the problem text says why) must not blank the table, or it could not be fixed.
   if (!t) {
     src = base;
     x = origX;
-    t = timeline(x, base);
+    t = timelineOrBasic(x, base);
   }
   if (!t) return $("details-dialog").close();
   const now = Date.now();
@@ -505,7 +505,7 @@ function renderDetails() {
   } else renderLinked(title, x.text);
 
   const edited = wasEdited(origX, base) ? " · edited" : "";
-  $("details-summary").textContent = `Started ${formatStart(t.start, now)} · Ended ${formatClock(t.end)}${edited}`;
+  $("details-summary").textContent = `Started ${formatStart(t.start, now)} · Ended ${t.end == null ? "\u2014" : formatClock(t.end)}${edited}`;
 
   const body = $("details-rows");
   body.textContent = "";
@@ -590,7 +590,7 @@ function refreshChecks(liveNumbers = false) {
   const problems = validateDraft(base, ed.draft, Date.now());
   const all = applyDraft(base, ed.draft);
   const x = all.find((i) => i.id === detailsFor_id);
-  const t = x && timeline(x, all);
+  const t = x && timelineOrBasic(x, all);
   if (!t && !problems.length) problems.push("Those times do not make a valid history.");
   const p = $("details-problems");
   p.hidden = !problems.length;
@@ -602,7 +602,7 @@ function refreshChecks(liveNumbers = false) {
   $("details-save").disabled = problems.length > 0 || changesFrom(base, ed.draft).length === 0;
   if (liveNumbers && t) {
     const edited = wasEdited(base.find((i) => i.id === detailsFor_id), base) ? " · edited" : "";
-    $("details-summary").textContent = `Started ${formatStart(t.start, Date.now())} · Ended ${formatClock(t.end)}${edited}`;
+    $("details-summary").textContent = `Started ${formatStart(t.start, Date.now())} · Ended ${t.end == null ? "\u2014" : formatClock(t.end)}${edited}`;
     const rows = $("details-rows").children;
     if (rows.length === t.rows.length) t.rows.forEach((r, i) => ((rows[i].children[2].textContent = totalText(r.onTop)), (rows[i].children[3].textContent = totalText(r.wall))));
   }

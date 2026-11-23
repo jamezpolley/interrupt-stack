@@ -173,3 +173,17 @@ describe("noteDayShift", () => {
     expect(noteDayShift(today, "nope", today, -1, now)).toBeNull();
   });
 });
+
+describe("an inverted entry can be opened and repaired", () => {
+  const X = item("X", m(10, 40) + 30_000, m(10, 40) + 5_000); // ended before it began
+  test("rowTargets still maps its two rows to its own fields", () => {
+    expect(rowTargets(X, [X])).toEqual([{ id: "X", field: "ts" }, { id: "X", field: "at" }]);
+  });
+  test("moving both times to yesterday is a valid edit", () => {
+    const y = (h, min) => new Date(2026, 10, 18, h, min).getTime();
+    expect(validateDraft([X], { times: { "X:ts": y(10, 40), "X:at": y(10, 41) } }, NOW)).toEqual([]);
+  });
+  test("a draft that leaves it inverted is still refused", () => {
+    expect(validateDraft([X], { times: { "X:at": m(10, 40) } }, NOW).join()).toMatch(/end before it started/);
+  });
+});
