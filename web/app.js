@@ -93,9 +93,17 @@ const nowCard = (() => {
   pop.className = "primary";
   pop.textContent = "Pop";
   pop.addEventListener("click", () => card._item && removeItem(card._item));
-  foot.append(age, pop);
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "drop";
+  del.textContent = "Delete";
+  del.addEventListener("click", () => card._item && deleteItem(card._item));
+  const acts = document.createElement("span");
+  acts.className = "now-actions";
+  acts.append(del, pop);
+  foot.append(age, acts);
   card.append(l, t, foot);
-  card._parts = { t, age };
+  card._parts = { t, age, del };
   return card;
 })();
 const emptyCard = (() => {
@@ -106,9 +114,10 @@ const emptyCard = (() => {
 
 function updateNowCard(top) {
   nowCard._item = top;
-  const { t, age } = nowCard._parts;
+  const { t, age, del } = nowCard._parts;
   if (nowCard._text !== top.text) {
     renderLinked(t, top.text);
+    del.setAttribute("aria-label", `Delete ${displayText(top.text)}, as if it was never pushed`);
     nowCard._text = top.text;
   }
   setText(age, `Pushed ${formatStart(top.ts, Date.now())}`);
@@ -129,18 +138,24 @@ function stackRowCreate() {
   x.className = "drop";
   x.textContent = "Drop";
   x.addEventListener("click", () => removeItem(li._item));
-  li.append(d, tx, ag, x);
-  li._parts = { d, tx, ag, x };
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "drop";
+  del.textContent = "Delete";
+  del.addEventListener("click", () => deleteItem(li._item));
+  li.append(d, tx, ag, x, del);
+  li._parts = { d, tx, ag, x, del };
   return li;
 }
 
 function stackRowUpdate(li, { it, depth }) {
   li._item = it;
-  const { d, tx, ag, x } = li._parts;
+  const { d, tx, ag, x, del } = li._parts;
   setText(d, String(depth));
   if (li._text !== it.text) {
     renderLinked(tx, it.text);
     x.setAttribute("aria-label", `Drop ${displayText(it.text)} from the stack`);
+    del.setAttribute("aria-label", `Delete ${displayText(it.text)}, as if it was never pushed`);
     li._text = it.text;
   }
   setText(ag, formatStart(it.ts, Date.now()));
@@ -469,7 +484,7 @@ function renderDetails() {
   if (!t) return $("details-dialog").close();
   const now = Date.now();
 
-  $("details-edit").hidden = $("details-again").hidden = !!ed;
+  $("details-edit").hidden = $("details-again").hidden = $("details-delete").hidden = !!ed;
   $("details-save").hidden = $("details-cancel").hidden = !ed;
 
   // The heading shows the text as people read it (links clickable). The edit box holds the raw stored text.
@@ -603,7 +618,7 @@ async function saveEdit() {
 
 function offerUndo(it, kind = "stack") {
   lastRemoved = { it, kind };
-  $("toast-text").textContent = `Removed: ${displayText(it.text)}`;
+  $("toast-text").textContent = `${kind === "delete" || kind === "note" ? "Deleted" : "Removed"}: ${displayText(it.text)}`;
   $("toast").hidden = false;
   clearTimeout(undoTimer);
   undoTimer = setTimeout(() => {
@@ -617,12 +632,20 @@ async function removeItem(it) {
   offerUndo(it);
 }
 
+// Delete: the entry is hidden everywhere as if it never existed (a stack item, a finished entry or a note). Undo brings it back.
+async function deleteItem(it) {
+  await sync.delete(it.id);
+  offerUndo(it, "delete");
+}
+
 async function undo() {
   const last = lastRemoved;
   if (!last) return;
   $("toast").hidden = true;
   lastRemoved = null;
-  await (last.kind === "queue" ? queue : sync).restore(last.it.id);
+  if (last.kind === "delete") await sync.undelete(last.it.id);
+  else if (last.kind === "note") await notes.restore(last.it.id);
+  else await (last.kind === "queue" ? queue : sync).restore(last.it.id);
 }
 
 // Where the server answers "are you there" and "what version are you": its own endpoints, or, in the static
@@ -795,6 +818,19 @@ async function init() {
   $("note-text").addEventListener("input", checkNote);
   $("note-time").addEventListener("input", checkNote);
   $("note-save").addEventListener("click", saveNote);
+  $("note-delete").addEventListener("click", async () => {
+    const n = noteEditing && notes.get(noteEditing);
+    if (!n) return;
+    $("note-dialog").close();
+    await notes.remove(n.id);
+    offerUndo(n, "note");
+  });
+  $("details-delete").addEventListener("click", async () => {
+    const it = sync.allItems().find((i) => i.id === detailsFor_id);
+    if (!it) return;
+    $("details-dialog").close();
+    await deleteItem(it);
+  });
   for (const [id, step] of [["note-day-back", -1], ["note-day-next", 1]]) {
     $(id).addEventListener("click", () => {
       const n = noteEditing && notes.get(noteEditing);

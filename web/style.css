@@ -246,3 +246,8 @@ button.note-add:hover:not(:disabled){border-color:var(--line)}
 .note-days{display:flex;gap:6px}
 .note-days .daybtn{min-height:36px;padding:4px 12px;font-size:.8125rem}
 .note-days .daybtn:disabled{opacity:.4}
+
+/* Delete: quiet, next to Pop (card) and Drop (rows). */
+.now-actions{display:flex;gap:8px;align-items:center}
+.under li .drop+.drop{margin-left:-4px}
+.details-foot #details-delete,.details-foot #note-delete{color:var(--muted);margin-right:auto}
