@@ -12,6 +12,7 @@ import { pushAgain } from "./again.js";
 import { displayText, renderLinked } from "./links.js";
 import { reconcileList } from "./reconcile.js";
 import { formatFailure } from "./debug-text.js";
+import { buildDebugData, readStorage } from "./debug-data.js";
 import { offersSignIn, shortStatus, statusLabel, statusMessage, unsentWords } from "./status-text.js";
 import { LOCAL_ONLY } from "./config.js";
 import { versionLine } from "./version-line.js";
@@ -21,6 +22,7 @@ const $ = (id) => document.getElementById(id);
 const UNDO_MS = 15000;
 
 let sync;
+let storages = {}; // the app's own databases, for the Debug panel's "Copy data"
 let queue;
 let notes;
 let lastRemoved = null; // { it, kind: "stack" | "queue" }
@@ -762,6 +764,7 @@ async function init() {
     render();
     queue?.reconcile().catch(() => {});
   };
+  storages = { stack: storage, queue: queueStorage, notes: notesStorage };
   sync = createSync({ storage, fetch: (p, i) => fetch(p, i), onChange: changed, onStatus: updateStatus, online: () => navigator.onLine, local: LOCAL_ONLY });
   queue = createQueue({ storage: queueStorage, stack: sync, onChange: changed, local: LOCAL_ONLY }); // joins the stack's sync channel
   notes = createNotes({ storage: notesStorage, stack: sync, onChange: changed, local: LOCAL_ONLY }); // joins it too
@@ -859,18 +862,50 @@ async function init() {
   }, { passive: true });
   addEventListener("resize", () => updatePill());
   $("undo-btn").addEventListener("click", undo);
-  $("status-btn").addEventListener("click", () => {
+  // The Debug panel opens from the status button (after a failure) or from the quiet "Debug" button by the version.
+  const openDebug = () => {
     const f = sync.lastFailure();
-    if (!f) return;
     const st = combinedStatus();
-    $("debug-title").textContent = statusMessage(st);
+    $("debug-title").textContent = f ? statusMessage(st) : "Debug";
     const unsent = unsentWords(st.pending);
     $("debug-unsent").textContent = unsent;
     $("debug-unsent").hidden = !unsent;
-    $("debug-signin").hidden = !offersSignIn(st.error, LOCAL_ONLY);
-    $("debug-text").textContent = formatFailure(f);
+    $("debug-signin").hidden = !f || !offersSignIn(st.error, LOCAL_ONLY);
+    $("debug-text").textContent = f ? formatFailure(f) : "No failed sync call to show.";
+    $("debug-copy").hidden = !f;
     $("debug-copy-msg").hidden = true;
+    $("debug-data").hidden = true;
     $("debug-dialog").showModal();
+  };
+  $("status-btn").addEventListener("click", () => sync.lastFailure() && openDebug());
+  $("debug-open").addEventListener("click", openDebug);
+  // Copy data: every local database as one JSON document. If the clipboard is refused, the JSON is shown to copy by hand.
+  let copiedTimer = null;
+  $("debug-copy-data").addEventListener("click", async () => {
+    const [stack, queueDb, notesDb] = await Promise.all([readStorage(storages.stack), readStorage(storages.queue), readStorage(storages.notes)]);
+    const doc = buildDebugData({
+      now: Date.now(),
+      version: $("version").textContent,
+      mode: LOCAL_ONLY ? "static" : "server",
+      db: { stack, queue: queueDb, notes: notesDb },
+      lastFailure: sync.lastFailure(),
+    });
+    const json = JSON.stringify(doc, null, 2);
+    const msg = $("debug-copy-msg");
+    clearTimeout(copiedTimer);
+    try {
+      await navigator.clipboard.writeText(json);
+      $("debug-data").hidden = true;
+      msg.textContent = "Copied";
+      copiedTimer = setTimeout(() => (msg.hidden = true), 2500);
+    } catch {
+      $("debug-data").value = json;
+      $("debug-data").hidden = false;
+      $("debug-data").focus();
+      $("debug-data").select();
+      msg.textContent = "Could not copy. The data is below: select it and copy it by hand.";
+    }
+    msg.hidden = false;
   });
   // A top-level navigation to the server's /login (relative to this page), which the sign-in proxy intercepts;
   // after signing in the person is sent back to /login, which redirects into the app.

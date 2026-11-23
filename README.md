@@ -151,6 +151,10 @@ A **Delete** button removes an entry as if it had never existed: on the Working-
 - **Notes** are deleted by their tombstone (`removed`).
 - **Events** stay append-only: nothing is erased. Deleting logs `delete` (at the time of deletion), Undo logs `undelete`.
 
+## Copy data (Debug panel)
+
+The Debug panel opens from the status button after a failed sync, or from the quiet **Debug** button beside the version line (so it is there offline and in the static version too). **Copy data** copies one JSON document: when it was made (local time with offset), the version label, the mode (`server` or `static`), the raw rows of the stack, Later and notes databases exactly as stored (millisecond timestamps) with each database's pending ids, cursor and epoch, and the latest failed sync call if there is one. It reads only the app's own databases. If the browser refuses the clipboard, the JSON is shown in a text box to select and copy by hand. The document is built by `web/debug-data.js`.
+
 ## Updating the app on your devices
 
 Devices keep a cached copy of the app so it opens instantly and offline, and they refresh it in the background, so a new release normally appears on the second load. Two things speed that up:

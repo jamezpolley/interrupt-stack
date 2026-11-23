@@ -29,7 +29,7 @@
       </button>
     </div>
     <div class="subhead">
-      <div class="version" id="version"></div>
+      <div class="version"><span id="version"></span> <button type="button" class="linkbtn" id="debug-open" aria-haspopup="dialog">Debug</button></div>
       <button type="button" class="pill" id="pane-pill" aria-controls="pane-queue"></button>
     </div>
   </header>
@@ -110,6 +110,7 @@
       <h2 id="debug-title"></h2>
       <span class="debug-actions">
         <button type="button" id="debug-copy">Copy</button>
+        <button type="button" id="debug-copy-data">Copy data</button>
         <button type="button" id="debug-close">Close</button>
       </span>
     </div>
@@ -119,6 +120,7 @@
       <span class="quiet-note">Opens the sign-in page, then returns here.</span>
     </p>
     <pre id="debug-text" tabindex="0"></pre>
+    <textarea id="debug-data" readonly rows="10" aria-label="App data as JSON" spellcheck="false" hidden></textarea>
     <p class="quiet-note" id="debug-copy-msg" role="status" hidden></p>
   </dialog>
 
