@@ -6,12 +6,13 @@ import { currentPane, pillFor } from "./pane.js";
 import { createEventStream } from "./events.js";
 import { canUpdateNow, describeServerUpdate, forceRefresh, readVersionInfo, requestServerCheck, updateServerNow } from "./refresh.js";
 import { doneTodayEntries } from "./today.js";
-import { describeRow, doneRow, formatClock, formatStart, timeline, totalText, wasEdited } from "./times.js";
+import { describeRow, doneRow, formatClock, formatStart, timelineOrBasic, totalText, wasEdited } from "./times.js";
 import { applyDraft, changesFrom, clockText, dateText, parseEdited, canShiftLater, noteDayShift, shiftRowTime, rowTargets, sideEffectText, sideEffects, validateDraft } from "./edit.js";
 import { pushAgain } from "./again.js";
 import { displayText, renderLinked } from "./links.js";
 import { reconcileList } from "./reconcile.js";
 import { formatFailure } from "./debug-text.js";
+import { buildDebugData, readStorage } from "./debug-data.js";
 import { offersSignIn, shortStatus, statusLabel, statusMessage, unsentWords } from "./status-text.js";
 import { LOCAL_ONLY } from "./config.js";
 import { versionLine } from "./version-line.js";
@@ -21,6 +22,7 @@ const $ = (id) => document.getElementById(id);
 const UNDO_MS = 15000;
 
 let sync;
+let storages = {}; // the app's own databases, for the Debug panel's "Copy data"
 let queue;
 let notes;
 let lastRemoved = null; // { it, kind: "stack" | "queue" }
@@ -93,9 +95,17 @@ const nowCard = (() => {
   pop.className = "primary";
   pop.textContent = "Pop";
   pop.addEventListener("click", () => card._item && removeItem(card._item));
-  foot.append(age, pop);
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "drop";
+  del.textContent = "Delete";
+  del.addEventListener("click", () => card._item && deleteItem(card._item));
+  const acts = document.createElement("span");
+  acts.className = "now-actions";
+  acts.append(del, pop);
+  foot.append(age, acts);
   card.append(l, t, foot);
-  card._parts = { t, age };
+  card._parts = { t, age, del };
   return card;
 })();
 const emptyCard = (() => {
@@ -106,9 +116,10 @@ const emptyCard = (() => {
 
 function updateNowCard(top) {
   nowCard._item = top;
-  const { t, age } = nowCard._parts;
+  const { t, age, del } = nowCard._parts;
   if (nowCard._text !== top.text) {
     renderLinked(t, top.text);
+    del.setAttribute("aria-label", `Delete ${displayText(top.text)}, as if it was never pushed`);
     nowCard._text = top.text;
   }
   setText(age, `Pushed ${formatStart(top.ts, Date.now())}`);
@@ -129,18 +140,24 @@ function stackRowCreate() {
   x.className = "drop";
   x.textContent = "Drop";
   x.addEventListener("click", () => removeItem(li._item));
-  li.append(d, tx, ag, x);
-  li._parts = { d, tx, ag, x };
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "drop";
+  del.textContent = "Delete";
+  del.addEventListener("click", () => deleteItem(li._item));
+  li.append(d, tx, ag, x, del);
+  li._parts = { d, tx, ag, x, del };
   return li;
 }
 
 function stackRowUpdate(li, { it, depth }) {
   li._item = it;
-  const { d, tx, ag, x } = li._parts;
+  const { d, tx, ag, x, del } = li._parts;
   setText(d, String(depth));
   if (li._text !== it.text) {
     renderLinked(tx, it.text);
     x.setAttribute("aria-label", `Drop ${displayText(it.text)} from the stack`);
+    del.setAttribute("aria-label", `Delete ${displayText(it.text)}, as if it was never pushed`);
     li._text = it.text;
   }
   setText(ag, formatStart(it.ts, Date.now()));
@@ -208,9 +225,9 @@ function makeDoneBody(li, isButton) {
   return body;
 }
 
-function doneRowUpdate(li, { it, row, edited }) {
+function doneRowUpdate(li, { it, row, edited, openable }) {
   li._item = it;
-  const isButton = Number.isFinite(it.at);
+  const isButton = openable; // every finished entry opens its details, even one with no timeline to derive, so it can be corrected
   if (li._isButton !== isButton) {
     const hadFocus = li.contains(document.activeElement);
     const body = makeDoneBody(li, isButton);
@@ -262,7 +279,7 @@ function render() {
   reconcileList(
     $("done"),
     done.map((e) =>
-      e.kind === "note" ? { kind: "note", note: e.note } : { kind: "item", it: e.item, row: doneRow(e.item, all, undefined, nowMs), edited: wasEdited(e.item, all) },
+      e.kind === "note" ? { kind: "note", note: e.note } : { kind: "item", it: e.item, row: doneRow(e.item, all, undefined, nowMs), edited: wasEdited(e.item, all), openable: !!timelineOrBasic(e.item, all) },
     ),
     {
       key: (e) => (e.kind === "note" ? `n:${e.note.id}` : `i:${e.it.id}`),
@@ -435,7 +452,7 @@ let ed = null; // {draft: {texts, times}} while editing: only what was changed, 
 function openDetails(id) {
   const all = sync.allItems();
   const item = all.find((i) => i.id === id);
-  if (!item || !timeline(item, all)) return;
+  if (!item || !timelineOrBasic(item, all)) return;
   detailsFor_id = id;
   ed = null;
   renderDetails();
@@ -458,18 +475,18 @@ function renderDetails() {
   const origX = base.find((i) => i.id === detailsFor_id);
   if (!origX) return $("details-dialog").close();
   let x = all.find((i) => i.id === detailsFor_id);
-  let t = timeline(x, all);
+  let t = timelineOrBasic(x, all);
   let src = all;
   // A draft that makes no valid history (the problem text says why) must not blank the table, or it could not be fixed.
   if (!t) {
     src = base;
     x = origX;
-    t = timeline(x, base);
+    t = timelineOrBasic(x, base);
   }
   if (!t) return $("details-dialog").close();
   const now = Date.now();
 
-  $("details-edit").hidden = $("details-again").hidden = !!ed;
+  $("details-edit").hidden = $("details-again").hidden = $("details-delete").hidden = !!ed;
   $("details-save").hidden = $("details-cancel").hidden = !ed;
 
   // The heading shows the text as people read it (links clickable). The edit box holds the raw stored text.
@@ -490,7 +507,7 @@ function renderDetails() {
   } else renderLinked(title, x.text);
 
   const edited = wasEdited(origX, base) ? " · edited" : "";
-  $("details-summary").textContent = `Started ${formatStart(t.start, now)} · Ended ${formatClock(t.end)}${edited}`;
+  $("details-summary").textContent = `Started ${formatStart(t.start, now)} · Ended ${t.end == null ? "\u2014" : formatClock(t.end)}${edited}`;
 
   const body = $("details-rows");
   body.textContent = "";
@@ -575,7 +592,7 @@ function refreshChecks(liveNumbers = false) {
   const problems = validateDraft(base, ed.draft, Date.now());
   const all = applyDraft(base, ed.draft);
   const x = all.find((i) => i.id === detailsFor_id);
-  const t = x && timeline(x, all);
+  const t = x && timelineOrBasic(x, all);
   if (!t && !problems.length) problems.push("Those times do not make a valid history.");
   const p = $("details-problems");
   p.hidden = !problems.length;
@@ -587,7 +604,7 @@ function refreshChecks(liveNumbers = false) {
   $("details-save").disabled = problems.length > 0 || changesFrom(base, ed.draft).length === 0;
   if (liveNumbers && t) {
     const edited = wasEdited(base.find((i) => i.id === detailsFor_id), base) ? " · edited" : "";
-    $("details-summary").textContent = `Started ${formatStart(t.start, Date.now())} · Ended ${formatClock(t.end)}${edited}`;
+    $("details-summary").textContent = `Started ${formatStart(t.start, Date.now())} · Ended ${t.end == null ? "\u2014" : formatClock(t.end)}${edited}`;
     const rows = $("details-rows").children;
     if (rows.length === t.rows.length) t.rows.forEach((r, i) => ((rows[i].children[2].textContent = totalText(r.onTop)), (rows[i].children[3].textContent = totalText(r.wall))));
   }
@@ -603,7 +620,7 @@ async function saveEdit() {
 
 function offerUndo(it, kind = "stack") {
   lastRemoved = { it, kind };
-  $("toast-text").textContent = `Removed: ${displayText(it.text)}`;
+  $("toast-text").textContent = `${kind === "delete" || kind === "note" ? "Deleted" : "Removed"}: ${displayText(it.text)}`;
   $("toast").hidden = false;
   clearTimeout(undoTimer);
   undoTimer = setTimeout(() => {
@@ -617,12 +634,20 @@ async function removeItem(it) {
   offerUndo(it);
 }
 
+// Delete: the entry is hidden everywhere as if it never existed (a stack item, a finished entry or a note). Undo brings it back.
+async function deleteItem(it) {
+  await sync.delete(it.id);
+  offerUndo(it, "delete");
+}
+
 async function undo() {
   const last = lastRemoved;
   if (!last) return;
   $("toast").hidden = true;
   lastRemoved = null;
-  await (last.kind === "queue" ? queue : sync).restore(last.it.id);
+  if (last.kind === "delete") await sync.undelete(last.it.id);
+  else if (last.kind === "note") await notes.restore(last.it.id);
+  else await (last.kind === "queue" ? queue : sync).restore(last.it.id);
 }
 
 // Where the server answers "are you there" and "what version are you": its own endpoints, or, in the static
@@ -739,6 +764,7 @@ async function init() {
     render();
     queue?.reconcile().catch(() => {});
   };
+  storages = { stack: storage, queue: queueStorage, notes: notesStorage };
   sync = createSync({ storage, fetch: (p, i) => fetch(p, i), onChange: changed, onStatus: updateStatus, online: () => navigator.onLine, local: LOCAL_ONLY });
   queue = createQueue({ storage: queueStorage, stack: sync, onChange: changed, local: LOCAL_ONLY }); // joins the stack's sync channel
   notes = createNotes({ storage: notesStorage, stack: sync, onChange: changed, local: LOCAL_ONLY }); // joins it too
@@ -795,6 +821,19 @@ async function init() {
   $("note-text").addEventListener("input", checkNote);
   $("note-time").addEventListener("input", checkNote);
   $("note-save").addEventListener("click", saveNote);
+  $("note-delete").addEventListener("click", async () => {
+    const n = noteEditing && notes.get(noteEditing);
+    if (!n) return;
+    $("note-dialog").close();
+    await notes.remove(n.id);
+    offerUndo(n, "note");
+  });
+  $("details-delete").addEventListener("click", async () => {
+    const it = sync.allItems().find((i) => i.id === detailsFor_id);
+    if (!it) return;
+    $("details-dialog").close();
+    await deleteItem(it);
+  });
   for (const [id, step] of [["note-day-back", -1], ["note-day-next", 1]]) {
     $(id).addEventListener("click", () => {
       const n = noteEditing && notes.get(noteEditing);
@@ -823,18 +862,50 @@ async function init() {
   }, { passive: true });
   addEventListener("resize", () => updatePill());
   $("undo-btn").addEventListener("click", undo);
-  $("status-btn").addEventListener("click", () => {
+  // The Debug panel opens from the status button (after a failure) or from the quiet "Debug" button by the version.
+  const openDebug = () => {
     const f = sync.lastFailure();
-    if (!f) return;
     const st = combinedStatus();
-    $("debug-title").textContent = statusMessage(st);
+    $("debug-title").textContent = f ? statusMessage(st) : "Debug";
     const unsent = unsentWords(st.pending);
     $("debug-unsent").textContent = unsent;
     $("debug-unsent").hidden = !unsent;
-    $("debug-signin").hidden = !offersSignIn(st.error, LOCAL_ONLY);
-    $("debug-text").textContent = formatFailure(f);
+    $("debug-signin").hidden = !f || !offersSignIn(st.error, LOCAL_ONLY);
+    $("debug-text").textContent = f ? formatFailure(f) : "No failed sync call to show.";
+    $("debug-copy").hidden = !f;
     $("debug-copy-msg").hidden = true;
+    $("debug-data").hidden = true;
     $("debug-dialog").showModal();
+  };
+  $("status-btn").addEventListener("click", () => sync.lastFailure() && openDebug());
+  $("debug-open").addEventListener("click", openDebug);
+  // Copy data: every local database as one JSON document. If the clipboard is refused, the JSON is shown to copy by hand.
+  let copiedTimer = null;
+  $("debug-copy-data").addEventListener("click", async () => {
+    const [stack, queueDb, notesDb] = await Promise.all([readStorage(storages.stack), readStorage(storages.queue), readStorage(storages.notes)]);
+    const doc = buildDebugData({
+      now: Date.now(),
+      version: $("version").textContent,
+      mode: LOCAL_ONLY ? "static" : "server",
+      db: { stack, queue: queueDb, notes: notesDb },
+      lastFailure: sync.lastFailure(),
+    });
+    const json = JSON.stringify(doc, null, 2);
+    const msg = $("debug-copy-msg");
+    clearTimeout(copiedTimer);
+    try {
+      await navigator.clipboard.writeText(json);
+      $("debug-data").hidden = true;
+      msg.textContent = "Copied";
+      copiedTimer = setTimeout(() => (msg.hidden = true), 2500);
+    } catch {
+      $("debug-data").value = json;
+      $("debug-data").hidden = false;
+      $("debug-data").focus();
+      $("debug-data").select();
+      msg.textContent = "Could not copy. The data is below: select it and copy it by hand.";
+    }
+    msg.hidden = false;
   });
   // A top-level navigation to the server's /login (relative to this page), which the sign-in proxy intercepts;
   // after signing in the person is sent back to /login, which redirects into the app.

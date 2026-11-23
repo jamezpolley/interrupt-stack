@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 
 /** `at` is the device's clock when the item last changed state (equal to `ts` for a fresh push). */
-export type Item = { id: string; text: string; ts: number; at: number; removed: boolean; seq: number; origin?: string; edited_at?: number };
+export type Item = { id: string; text: string; ts: number; at: number; removed: boolean; seq: number; origin?: string; edited_at?: number; deleted?: boolean };
 /**
  * `origin` is the id of the item this one was pushed again from. It is set once, when the row is created, and never
  * changes. Absent or null means "not given": a write without it (an older client) leaves a stored origin untouched.
@@ -11,8 +11,13 @@ export type Item = { id: string; text: string; ts: number; at: number; removed: 
  * Without it, a write to an existing row keeps the stored text and ts, so a client holding an old copy (an older
  * build, or a device that has not synced yet) cannot undo an edit by sending its state again. A new row ignores it.
  */
-export type ItemInput = { text: string; ts: number; removed: boolean; at?: number; origin?: string | null; edit?: boolean };
-export type LogEvent = { n: number; ts: number; at: number; op: "push" | "pop" | "restore" | "queue" | "dequeue" | "requeue" | "start" | "edit" | "note"; id: string; text: string; detail?: string };
+export type ItemInput = { text: string; ts: number; removed: boolean; at?: number; origin?: string | null; edit?: boolean; deleted?: boolean };
+/**
+ * `deleted: true` hides the item everywhere, as if it had never been made (it stays in the database and in the event log).
+ * Leaving it out never changes it, so an older client or a stale copy cannot bring a deleted item back; only an explicit
+ * `deleted: false` (undo) does.
+ */
+export type LogEvent = { n: number; ts: number; at: number; op: "push" | "pop" | "restore" | "queue" | "dequeue" | "requeue" | "start" | "edit" | "note" | "delete" | "undelete"; id: string; text: string; detail?: string };
 
 /**
  * The queue is a pile of things to do later, kept apart from the stack: its own table, its own `seq` numbering and
@@ -85,9 +90,9 @@ const toQueueItem = (r: QueueRow): QueueItem => ({ id: r.id, text: r.text, ts: r
 type NoteRow = { id: string; text: string; ts: number; removed: number; seq: number; edited_at: number | null };
 const toNote = (r: NoteRow): Note => ({ id: r.id, text: r.text, ts: r.ts, removed: r.removed === 1, seq: r.seq, ...(r.edited_at != null ? { edited_at: r.edited_at } : {}) });
 
-type Row = { id: string; text: string; ts: number; at: number | null; removed: number; seq: number; origin: string | null; edited_at: number | null };
+type Row = { id: string; text: string; ts: number; at: number | null; removed: number; seq: number; origin: string | null; edited_at: number | null; deleted: number };
 // `origin` is left out when there is none, so rows that were never pushed again look exactly as they always did.
-const toItem = (r: Row): Item => ({ id: r.id, text: r.text, ts: r.ts, at: r.at ?? r.ts, removed: r.removed === 1, seq: r.seq, ...(r.origin ? { origin: r.origin } : {}), ...(r.edited_at != null ? { edited_at: r.edited_at } : {}) });
+const toItem = (r: Row): Item => ({ id: r.id, text: r.text, ts: r.ts, at: r.at ?? r.ts, removed: r.removed === 1, seq: r.seq, ...(r.origin ? { origin: r.origin } : {}), ...(r.edited_at != null ? { edited_at: r.edited_at } : {}), ...(r.deleted === 1 ? { deleted: true } : {}) });
 
 export function openStore(path: string, opts: { now?: () => number } = {}): Store {
   const clock = opts.now ?? Date.now;
@@ -103,6 +108,8 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
   if (!columns.some((c) => c.name === "origin")) db.run("ALTER TABLE items ADD COLUMN origin TEXT");
   // Databases created before editing have no `edited_at` (when the item was last corrected; null if never).
   if (!columns.some((c) => c.name === "edited_at")) db.run("ALTER TABLE items ADD COLUMN edited_at INTEGER");
+  // Databases created before deleting have no `deleted` (1 = hidden everywhere; see ItemInput.deleted).
+  if (!columns.some((c) => c.name === "deleted")) db.run("ALTER TABLE items ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0");
   db.run(
     "CREATE TABLE IF NOT EXISTS events (n INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, at INTEGER NOT NULL, op TEXT NOT NULL, id TEXT NOT NULL, text TEXT NOT NULL)",
   );
@@ -121,30 +128,31 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
   if (!savedEpoch) db.prepare("INSERT INTO meta (key, value) VALUES ('epoch', ?)").run(epoch);
 
   const write = db.prepare(
-    `INSERT INTO items (id, text, ts, at, removed, origin, edited_at, seq)
-     VALUES ($id, $text, $ts, $at, $removed, $origin, NULL, ${NEXT_SEQ})
+    `INSERT INTO items (id, text, ts, at, removed, origin, edited_at, deleted, seq)
+     VALUES ($id, $text, $ts, $at, $removed, $origin, NULL, COALESCE($deleted, 0), ${NEXT_SEQ})
      ON CONFLICT(id) DO UPDATE SET text = $text, ts = $ts, at = $at, removed = $removed,
        origin = COALESCE(items.origin, $origin),
        edited_at = COALESCE($editedAt, items.edited_at),
+       deleted = COALESCE($deleted, items.deleted),
        seq = ${NEXT_SEQ}
-     RETURNING id, text, ts, at, removed, seq, origin, edited_at`,
+     RETURNING id, text, ts, at, removed, seq, origin, edited_at, deleted`,
   );
-  const find = db.prepare("SELECT id, text, ts, at, removed, seq, origin, edited_at FROM items WHERE id = $id");
+  const find = db.prepare("SELECT id, text, ts, at, removed, seq, origin, edited_at, deleted FROM items WHERE id = $id");
   const record = db.prepare(
     "INSERT INTO events (ts, at, op, id, text, detail) VALUES ($ts, $at, $op, $id, $text, $detail)",
   );
   const events = db.prepare("SELECT n, ts, at, op, id, text, detail FROM events ORDER BY n ASC");
-  const later = db.prepare("SELECT id, text, ts, at, removed, seq, origin, edited_at FROM items WHERE seq > $seq ORDER BY seq ASC");
+  const later = db.prepare("SELECT id, text, ts, at, removed, seq, origin, edited_at, deleted FROM items WHERE seq > $seq ORDER BY seq ASC");
   const maxSeq = db.prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM items");
   const tally = db.prepare(
-    "SELECT COALESCE(SUM(removed = 0), 0) AS live, COALESCE(SUM(removed = 1), 0) AS removed FROM items",
+    "SELECT COALESCE(SUM(removed = 0 AND deleted = 0), 0) AS live, COALESCE(SUM(removed = 1 AND deleted = 0), 0) AS removed FROM items",
   );
 
   // The server compares what a device sends with what it holds and logs the difference, so a resend of the
   // same state adds nothing. A device only sends an item's latest state, so several offline changes between
   // two syncs show up as the net change. Event times from a device are clamped to the server's clock: a phone
   // whose clock runs ahead must not get stuck in a sync error or put events in the future.
-  const upsertTx = db.transaction((id: string, inText: string, inTs: number, removed: boolean, at: number | undefined, origin: string | null, edit: boolean) => {
+  const upsertTx = db.transaction((id: string, inText: string, inTs: number, removed: boolean, at: number | undefined, origin: string | null, edit: boolean, deleted: boolean | null) => {
     const now = clock();
     const clamp = (t: number) => Math.max(0, Math.min(t, now)); // never in the future, never before 1970
     const before = find.get({ $id: id }) as Row | null;
@@ -187,9 +195,13 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
       if (before!.removed === 1 && removed && (before!.at ?? before!.ts) !== itemAt) diff.at = { from: before!.at ?? before!.ts, to: itemAt };
     }
     const edited = Object.keys(diff).length > 0;
-    const saved = toItem(write.get({ $id: id, $text: text, $ts: ts, $at: itemAt, $removed: removed ? 1 : 0, $origin: origin, $editedAt: edited ? now : null }) as Row);
+    const saved = toItem(write.get({ $id: id, $text: text, $ts: ts, $at: itemAt, $removed: removed ? 1 : 0, $origin: origin, $editedAt: edited ? now : null, $deleted: deleted === null ? null : deleted ? 1 : 0 }) as Row);
     for (const [op, when] of changes) record.run({ $ts: now, $at: when, $op: op, $id: id, $text: text, $detail: null });
     if (edited) record.run({ $ts: now, $at: now, $op: "edit", $id: id, $text: text, $detail: JSON.stringify(diff) });
+    // Deleting and undoing are logged when the flag really changes; the events before them stay as they were.
+    const wasDeleted = before?.deleted === 1;
+    if (!wasDeleted && saved.deleted) record.run({ $ts: now, $at: now, $op: "delete", $id: id, $text: text, $detail: null });
+    if (wasDeleted && !saved.deleted) record.run({ $ts: now, $at: now, $op: "undelete", $id: id, $text: text, $detail: null });
     return saved;
   });
 
@@ -251,7 +263,7 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
   const laterNotes = db.prepare(`SELECT ${NCOLS} FROM notes WHERE seq > $seq ORDER BY seq ASC`);
 
   // A new note logs one `note` event (its text, dated at the note's own time). A deliberate edit logs an `edit` event
-  // with what changed, like an item edit. Removing logs nothing. A resend of the same state adds nothing.
+  // with what changed, like an item edit. Removing logs `delete` (and coming back `undelete`). A resend of the same state adds nothing.
   const upsertNoteTx = db.transaction((id: string, inText: string, inTs: number, removed: boolean, edit: boolean) => {
     const now = clock();
     const clamp = (t: number) => Math.max(0, Math.min(t, now));
@@ -269,6 +281,9 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
     const saved = toNote(writeNote.get({ $id: id, $text: text, $ts: ts, $removed: removed ? 1 : 0, $editedAt: edited ? now : null }) as NoteRow);
     if (!before) record.run({ $ts: now, $at: ts, $op: "note", $id: id, $text: text, $detail: null });
     if (edited) record.run({ $ts: now, $at: now, $op: "edit", $id: id, $text: text, $detail: JSON.stringify(diff) });
+    // A removed note is a deleted one: logged as `delete`, and `undelete` when it comes back.
+    if (before && before.removed === 0 && removed) record.run({ $ts: now, $at: now, $op: "delete", $id: id, $text: text, $detail: null });
+    if (before && before.removed === 1 && !removed) record.run({ $ts: now, $at: now, $op: "undelete", $id: id, $text: text, $detail: null });
     return saved;
   });
 
@@ -347,7 +362,8 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
       if (at !== undefined && !Number.isSafeInteger(at)) throw new ValidationError("at must be an integer");
       const origin = input.origin ?? null;
       if (origin !== null && (typeof origin !== "string" || !ID_RE.test(origin) || origin === id)) throw new ValidationError("origin must be the id of another item");
-      return upsertTx.immediate(id, text, input.ts, input.removed === true, at, origin, input.edit === true);
+      if (input.deleted !== undefined && input.deleted !== null && typeof input.deleted !== "boolean") throw new ValidationError("deleted must be a boolean");
+      return upsertTx.immediate(id, text, input.ts, input.removed === true, at, origin, input.edit === true, typeof input.deleted === "boolean" ? input.deleted : null);
     },
     since(seq) {
       const items = (later.all({ $seq: seq }) as Row[]).map(toItem);

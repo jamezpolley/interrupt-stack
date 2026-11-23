@@ -143,6 +143,18 @@ A short text entry (not empty, up to 200 characters) that never touches the stac
 - **Edit.** Tapping a note opens a small panel with its text and its time (24-hour `HH:MM` or `HH:MM:SS`, on the note's own day; the day buttons can be added once they are merged). No timeline, no Push again.
 - **Static version.** Notes live in the browser only.
 
+## Deleting an entry
+
+A **Delete** button removes an entry as if it had never existed: on the Working-on card and on each row underneath (next to Pop/Drop), and in the details of a finished entry and of a note. The usual 15 second Undo toast follows; there is no confirm. A deleted item is not on the stack, not in Done today, not in anyone's timeline or time on top (an item pushed above another and then deleted adds nothing to it), and not counted in depth or the `live` metric. Later rows keep their own Drop.
+
+- **Items** carry a `deleted` flag, synced like any change. A write that leaves `deleted` out never clears it (an older client or a stale copy cannot bring an item back); only an explicit `deleted: false` (Undo) does. An older cached client just sees a deleted item as an ordinary one.
+- **Notes** are deleted by their tombstone (`removed`).
+- **Events** stay append-only: nothing is erased. Deleting logs `delete` (at the time of deletion), Undo logs `undelete`.
+
+## Copy data (Debug panel)
+
+The Debug panel opens from the status button after a failed sync, or from the quiet **Debug** button beside the version line (so it is there offline and in the static version too). **Copy data** copies one JSON document: when it was made (local time with offset), the version label, the mode (`server` or `static`), the raw rows of the stack, Later and notes databases exactly as stored (millisecond timestamps) with each database's pending ids, cursor and epoch, and the latest failed sync call if there is one. It reads only the app's own databases. If the browser refuses the clipboard, the JSON is shown in a text box to select and copy by hand. The document is built by `web/debug-data.js`.
+
 ## Updating the app on your devices
 
 Devices keep a cached copy of the app so it opens instantly and offline, and they refresh it in the background, so a new release normally appears on the second load. Two things speed that up:

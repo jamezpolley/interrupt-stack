@@ -246,3 +246,13 @@ button.note-add:hover:not(:disabled){border-color:var(--line)}
 .note-days{display:flex;gap:6px}
 .note-days .daybtn{min-height:36px;padding:4px 12px;font-size:.8125rem}
 .note-days .daybtn:disabled{opacity:.4}
+
+/* Delete: quiet, next to Pop (card) and Drop (rows). */
+.now-actions{display:flex;gap:8px;align-items:center}
+.under li .drop+.drop{margin-left:-4px}
+.details-foot #details-delete,.details-foot #note-delete{color:var(--muted);margin-right:auto}
+
+/* Debug: a quiet text button beside the version, and the fallback box for the copied data. */
+button.linkbtn{min-height:0;padding:0 2px;border:0;background:transparent;color:var(--muted);font:inherit;text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:3px;cursor:pointer}
+button.linkbtn:hover{color:var(--ink)}
+#debug-data{width:100%;font-family:var(--font-mono);font-size:.75rem;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px;resize:vertical}

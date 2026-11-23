@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { doneRow, formatClock, formatDuration, formatStart, timeline, timeOnTop, detailsFor, wasEdited, describeRow } from "./times.js";
+import { doneRow, formatClock, formatDuration, formatStart, timeline, timeOnTop, detailsFor, wasEdited, describeRow, timelineOrBasic } from "./times.js";
 
 const MIN = 60000;
 // Items are (id, ts, at, removed). Times are minutes from a base so the arithmetic is easy to read.
@@ -452,8 +452,9 @@ describe("detailsFor: the words in the panel", () => {
     expect(d.title).toBe("Write report"); // the title is rendered with real links by the page
   });
 
-  test("nothing to show for an item with no end time", () => {
-    expect(detailsFor(mk("x", "x", 0, null), [], NOWD, "en-US")).toBeNull();
+  test("an item with no end time still has details (its push only); a live one has none", () => {
+    expect(detailsFor(mk("x", "x", 0, null), [], NOWD, "en-US").rows.map((r) => r.what)).toEqual(["Pushed"]);
+    expect(detailsFor(mk("y", "y", 0, 5, false), [], NOWD, "en-US")).toBeNull();
   });
 });
 
@@ -484,5 +485,59 @@ describe("describeRow", () => {
     expect(describeRow({ kind: "back", who: "Sam" })).toBe("Back on top: Sam ended");
     expect(describeRow({ kind: "dropped", who: "Sam" })).toBe("Dropped: Sam still on top");
     expect(describeRow({ kind: "popped" })).toBe("Popped");
+  });
+});
+
+describe("an entry that has no derived timeline can still be opened", () => {
+  const D = at(2026, 11, 19, 10, 40);
+  const NOWD = at(2026, 11, 19, 15, 0);
+  // "Shave": started 10:40:30 on one device and ended 10:40:05 on another (clock skew): ended before it began.
+  const shave = { id: "shave", text: "Shave", ts: D + 30_000, at: D + 5_000, removed: true, seq: 1 };
+
+  test("the derived timeline is still null for it, as the row's dash says", () => {
+    expect(timeline(shave, [shave])).toBeNull();
+    expect(doneRow(shave, [shave], "en-US", NOWD).duration).toBe("\u2014");
+  });
+
+  test("but there are basic rows: pushed and ended, with no totals", () => {
+    const t = timelineOrBasic(shave, [shave]);
+    expect(t.rows.map((r) => [r.kind, r.t, r.onTop, r.wall])).toEqual([
+      ["pushed", shave.ts, null, null],
+      ["ended", shave.at, null, null],
+    ]);
+  });
+
+  test("a real timeline is returned unchanged", () => {
+    const x = { id: "x", text: "x", ts: D, at: D + 30 * 60000, removed: true };
+    expect(timelineOrBasic(x, [x])).toEqual(timeline(x, [x]));
+  });
+
+  test("an entry with no end time at all shows just its push", () => {
+    const old = { id: "o", text: "o", ts: D, removed: true };
+    expect(timelineOrBasic(old, [old]).rows.map((r) => r.kind)).toEqual(["pushed"]);
+  });
+
+  test("an item still on the stack has nothing to open, and junk times do not either", () => {
+    expect(timelineOrBasic({ id: "l", text: "l", ts: D, at: D, removed: false }, [])).toBeNull();
+    expect(timelineOrBasic({ id: "j", text: "j", ts: NaN, at: 5, removed: true }, [])).toBeNull();
+  });
+
+  test("detailsFor shows the times with dashes for the totals", () => {
+    const d = detailsFor(shave, [shave], NOWD, "en-US");
+    expect(d.title).toBe("Shave");
+    expect(d.summary).toBe("Started 10:40 \u00b7 Ended 10:40");
+    expect(d.rows).toEqual([
+      { time: "10:40", what: "Pushed", onTop: "\u2014", wall: "\u2014" },
+      { time: "10:40", what: "Ended", onTop: "\u2014", wall: "\u2014" },
+    ]);
+  });
+
+  test("describeRow knows 'ended'", () => {
+    expect(describeRow({ kind: "ended" })).toBe("Ended");
+  });
+
+  test("an entry with no end time: the summary says the end is unknown", () => {
+    const old = { id: "o", text: "o", ts: D, removed: true };
+    expect(detailsFor(old, [old], NOWD, "en-US").summary).toBe("Started 10:40 \u00b7 Ended \u2014");
   });
 });

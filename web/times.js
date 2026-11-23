@@ -80,6 +80,20 @@ export function timeline(x, items) {
   return { start: x.ts, end: x.at, onTop: total(x.at), wall: x.at - x.ts, rows };
 }
 
+/**
+ * The timeline, or when there is none to derive (it ended before it began because two devices' clocks disagree, or it has
+ * no end time at all) just its own rows with no totals: "pushed" and, if it has one, "ended". That is enough to open the
+ * entry and correct its times. Null for something still on the stack or with junk times.
+ */
+export function timelineOrBasic(x, items) {
+  const t = timeline(x, items);
+  if (t) return t;
+  if (!x || !x.removed || !ok(x.ts)) return null;
+  const rows = [{ t: x.ts, kind: "pushed", onTop: null, wall: null }];
+  if (ok(x.at)) rows.push({ t: x.at, kind: "ended", onTop: null, wall: null });
+  return { start: x.ts, end: ok(x.at) ? x.at : null, onTop: null, wall: null, rows, basic: true };
+}
+
 /** "<1 min", "12 min", "1 h 5 min", "2 h", "1 d 2 h". Empty for anything that is not a duration. */
 export function formatDuration(ms) {
   if (!ok(ms) || ms < 0) return "";
@@ -133,12 +147,13 @@ export function doneRow(item, all, locale, nowMs = Date.now()) {
   return { start, end: formatClock(item.at), duration: d || DASH };
 }
 
-export const totalText = (ms) => (ms === 0 ? "0 min" : formatDuration(ms));
+export const totalText = (ms) => (ms == null ? "\u2014" : ms === 0 ? "0 min" : formatDuration(ms));
 const WHAT = {
   pushed: () => "Pushed",
   paused: (r) => `Paused: ${displayText(r.who)} pushed`,
   back: (r) => `Back on top: ${displayText(r.who)} ended`,
   popped: () => "Popped",
+  ended: () => "Ended",
   dropped: (r) => (r.who ? `Dropped: ${displayText(r.who)} still on top` : "Dropped"),
 };
 
@@ -163,11 +178,11 @@ export function wasEdited(item, all) {
  * because both come from the same derivation.
  */
 export function detailsFor(item, all, nowMs, locale) {
-  const t = timeline(item, all);
+  const t = timelineOrBasic(item, all);
   if (!t) return null;
   return {
     title: item.text,
-    summary: `Started ${formatStart(t.start, nowMs, locale)} · Ended ${formatClock(t.end)}`,
+    summary: `Started ${formatStart(t.start, nowMs, locale)} · Ended ${t.end == null ? "\u2014" : formatClock(t.end)}`,
     rows: t.rows.map((r) => ({ time: formatStart(r.t, nowMs, locale), what: describeRow(r), onTop: totalText(r.onTop), wall: totalText(r.wall) })),
   };
 }
