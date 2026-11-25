@@ -9,7 +9,7 @@ now with SQLite underneath.
 ## Summary
 
 The **actions log** is the only source of truth. An action is one thing the person did, recorded once and never
-changed: `push`, `pop`, `drop`, `restore`, `edit`, `delete`, `note`, and whatever is added later. Each action carries
+changed: `push`, `pop`, `drop`, `push-again`, `edit`, `delete`, `note`, and whatever is added later. Each action carries
 two times: `ts`, the server clock when it was received (always the server's), and `at`, when the person says it
 happened (always the person's, never later than `ts`). Everything else (the stack, the Done list, the Later queue,
 notes, time on top) is a projection computed from the log, kept as tables by the server and recomputed on the device
@@ -27,11 +27,11 @@ repurposes both for pop. Each of these follows from that.
 
 | # | Weakness | Where |
 |---|----------|-------|
-| W1 | **The end time shares a field with "last change".** A pop writes `items.at`; an undo overwrites it. A pop time has no field of its own, and an undone pop leaves no trace in `items`. | `store.ts` upsertTx, `at` branches; `sync.js` `remove`/`restore` |
+| W1 | **The end time shares a field with "last change".** A pop writes `items.at`; an undo overwrites it. A pop time has no field of its own, and an undone pop leaves no trace in `items`. | `store.ts` upsertTx, `at` branches; `sync.js` `remove`/`push-again` |
 | W2 | **The push time can be rewritten** by any write marked `edit: true`, with no record in the row of what it was. | `store.ts` line 166 and the check on line 190 |
 | W3 | **No immutable server-received time per action.** The server's receipt time exists only in `events.ts`, which nothing reads. Once `ts` or `at` is edited the row cannot say when the server first saw the push or the pop. | `events` table |
 | W4 | **`at < ts` is representable and gets stored.** A new row keeps its device `ts` unclamped while its `at` is clamped to the server clock, so a device whose clock runs a little fast stores an item that "ended" before it began. The derivation then returns null. | `store.ts` lines 166 vs 177; queue line 250; `times.js` `derive` |
-| W5 | **A pop and a later restore make "on top" wrong.** Time on top is derived from `[ts, at]`; after pop, restore, pop, `at` is the last pop, so the gap when the item was off the stack counts as on top. | `times.js` `derive` |
+| W5 | **A pop and a later push again make "on top" wrong.** Time on top is derived from `[ts, at]`; after pop, push again, pop, `at` is the last pop, so the gap when the item was off the stack counts as on top. | `times.js` `derive` |
 | W6 | **Offline changes collapse, and history is a lossy side table.** The client keeps current-state rows plus a dirty flag, not a journal, so several offline changes to a row reach the server as one net change. The server-side `events` table (it exists today, server only, no read endpoint, never seen by the client) records diffs, and dates edit/delete events by the server clock rather than the person's. | `store.ts` lines 151-154, 199-204; `web/core.js` outbox |
 | W7 | **Stack order uses the device's push time**, so a fast clock can put a push above one made a moment later on another device. Follows from W4. | `sync.js` `currentStack` |
 
@@ -55,7 +55,7 @@ CREATE TABLE actions (
   at      INTEGER NOT NULL,                   -- the person's time, clamped to <= ts at receipt. Never changes.
   kind    TEXT NOT NULL,                      -- open-ended; see below
   target  TEXT NOT NULL,                      -- what it acts on: an item, queue row or note id
-  ref     TEXT,                               -- an action id (edit, void) or an item id (restore), per kind
+  ref     TEXT,                               -- an action id (edit, void), per kind
   data    TEXT,                               -- JSON payload per kind: text, a new time, ...
   origin  TEXT                                -- device that made it
 );
@@ -74,28 +74,30 @@ columns. Today's:
 | Kind | `target` | Meaning |
 |------|----------|---------|
 | `push` | new item id | Item starts; `data.text` |
-| `pop` | item id | Item ended while it was on top of the stack |
-| `drop` | item id | Item ended while not on top |
-| `restore` | item id | An ended item goes back on the stack. Its earlier push and pop stay; this adds a new interval with its own start time |
+| `pop` | item id | Item ended. Only the item on top of the stack can be popped |
+| `drop` | item id | A buried item is flagged as not needed. It stays where it is; when it reaches the top it is popped automatically (see below) |
+| `push-again` | item id | "Push again": an ended item goes back on the stack. Its earlier push and pop stay; this adds a new interval with its own start time |
 | `void` | item id | Undo: `ref` names the action to cancel (the UI offers it only for the latest pop; the item then "never left") |
 | `edit` | item id | `ref` names the action whose time changes, with `data.at`; or no `ref` and `data.text` for a text change |
 | `delete` / `undelete` | item id | Hide / unhide |
 | `note` / `edit`/`delete` on a note | note id | Notes: same mechanism, no intervals |
 | `later` / `start` / `dequeue` / `requeue` | queue id | Today's Later queue operations; `start` also pushes (`s-x` from `q-x`) as an ordinary `push` action |
 
-**Pop vs drop** are two kinds, recorded by the client at the moment of the action, because the log should hold what
-the person did, not what a rule later infers. (Today the client derives it from whether anything was above the item;
-decision 4 asks whether to keep that derivation instead and have one `end` kind. With open-ended kinds there is no
-need for an `end` abstraction.)
+**Pop and drop.** There is one way for an item to leave the stack: a pop, and only the item on top can be popped.
+A `drop` is not an exit. It flags a buried item as "I realised I did not need to do this", recorded at the moment the
+person says so. When a dropped item reaches the top of the stack, the client records a `pop` for it at once
+(`at` = the moment it surfaced). That keeps the stack model intact and still shows when the decision was made. The
+automatic pop has an id derived from the drop action's id, so two devices that both notice it produce one action
+(`INSERT OR IGNORE` on the unique id). A dropped item that is popped manually first needs no second pop.
 
-**Undo pop vs restore** are different things and the old draft's `unend` conflated them:
+**Undo pop vs push again** are different things and the old draft's `unend` conflated them:
 
 - *Undo pop* = a `void` action naming the pop. As far as every projection is concerned the pop never happened. The
   pop stays in the log.
-- *Restore* = a `restore` action. The pop did happen; the item is pushed again. The item now has two intervals, and
+- *Push again* = a `push-again` action. The pop did happen; the item is pushed again. The item now has two intervals, and
   both keep their original times. Time on top sums the intervals, so W5 goes away.
 
-The current app's button (called "restore" in the code and events) has only ever behaved as undo: that is decision 5.
+The current app's button (called "push again" in the code and events) has only ever behaved as undo: that is decision 5.
 
 ### Projections
 
@@ -112,7 +114,7 @@ queue      (id PK, text, state, last_n)
 
 The server applies each action to these tables in the same transaction that appends it, so the log and the state
 cannot disagree. An item is on the stack when it has an interval with no end. Done today = intervals whose end falls
-in the day. "What was on the stack at 10:40 last Tuesday" is one query over `intervals` using `start_at`/`end_at`
+in the day: one entry per interval, and opening any interval shows the item's full history (all its intervals). "What was on the stack at 10:40 last Tuesday" is one query over `intervals` using `start_at`/`end_at`
 (with edits applied, below). "What did the database say at 10:40" is a replay of `actions WHERE ts <= :T`, rare and
 debug-only.
 
@@ -203,7 +205,7 @@ each in one transaction. Adding a library would not remove the real work, which 
 | `items` row | `push` (`at` = `items.ts`; `ts` = the first `push` event's `ts`, else `items.ts`, with `data.synth` marking a guess) |
 | removed item | `pop` (or `drop` where the event log says so) with `at` = `items.at`; rows with NULL `at` get `at = ts` |
 | `events` `edit` | `edit` actions (`ts` = event `ts`) |
-| `events` `restore` after a `pop` | a `void` of that pop (that is what the current button does; decision 5) |
+| `events` `push-again` after a `pop` | a `void` of that pop (that is what the current button does; decision 5) |
 | deleted flag / events | `delete` / `undelete` |
 | `notes` | `note` (+ `edit`/`delete`) |
 | queue rows | `later`, `start`, `dequeue`, `requeue` |
@@ -254,7 +256,7 @@ per table. Revisit if the query count grows several-fold.
 ## 7. Tests and risks
 
 Tests: a fixture database in today's exact schema with real-shaped rows (NULL `at`, pre-event-log items, `at < ts`
-rows, pop-restore-pop items, edited and deleted items, queue starts, notes) converted and checked against section 4's
+rows, pop, push again, pop items, edited and deleted items, queue starts, notes) converted and checked against section 4's
 table, and converted again to prove it idempotent; a rebuild-equals-incremental property test; random action
 sequences from two devices with clocks skewed by up to 5 s, resends and late arrivals, asserting the invariants
 (`ts` monotonic in `n`, `at <= ts`, no interval with effective end before start, every action id applied once); the
@@ -270,24 +272,31 @@ same reducer fixtures run in Bun and in the browser module; old-client wire test
 
 ---
 
-## 8. Decisions for the owner
+## 8. Decisions
 
-1. **Edits.** You said an immutable fact should not be editable; I agree. This design does not edit facts. `ts` and
-   the first-reported `at` stay in the log forever. An edit is a new action, and the *effective* time is the latest
-   edit. If you accept that, say so; if you want the original `at` truly overwritten, that is a different (and
-   worse) design and a major change that I would not slip in.
-2. **Restore as a new interval on the same item** (recommended: one task keeps one history, the Done list can show
-   each stay) or as a new item with a pointer to the original?
-3. **Done list:** one entry per interval (a restored item appears each time it was popped) or one per item?
-4. **Pop and drop as separate recorded kinds** (recommended) or one `end` kind with the client deriving which?
-5. **The current undo/"restore" button:** it behaves as undo pop (void). Keep it that way and add a separate
-   "push again" for restore, or is something else meant?
-6. **Falling back to older code after migration:** accept a stale view in that mode (recommended), or write the
-   legacy columns for one release?
-7. **Debug read endpoint** `GET /api/items/:id/history` (recommended) and the `/api/state` / `/api/day` endpoints
-   in step 3.
-8. **Void rules:** the UI offers undo only for the latest pop; the server accepts a `void` of any action by the same
-   person (recommended), or only the latest?
-9. **`events` after migration:** frozen, read-only (recommended).
-10. **No ORM; numbered migrations with plain `bun:sqlite`.**
-11. **Order of work:** the four steps in section 4 as separate stacked PRs, with step 1 first.
+Settled by the owner (review of 2026-11-26):
+
+1. **Edits are actions; the original times are never overwritten.** Agreed. `ts` and the first-reported `at` stay in the
+   log; the effective time is the latest edit.
+2. **Push again is a new interval on the same item.** One item, several intervals; the second and later `push-again`
+   actions each start a new interval. (Not a major change to the model: an item already has an arbitrary list of
+   actions.)
+3. **Done list: one entry per interval**, and opening any interval shows the full history (all intervals) of the item.
+4. **Pop and drop are different kinds, with a new meaning for drop.** Pop is the only way out of the stack and only
+   applies to the item on top. Drop flags a buried item; when it reaches the top it is popped automatically
+   (section 2, Kinds).
+5. **The current button stays an undo (void of the pop).** "Restore" is retired as a word; the other operation is
+   called "push again".
+7. **Debug and read endpoints (step 3).** Not a question; stands as written.
+9. **`events` after migration:** frozen, read-only. Not a question; stands as written.
+10. **No ORM; numbered migrations with plain `bun:sqlite`.** Not a question; stands as written.
+11. **Order of work:** the four steps in section 4 as stacked PRs, step 1 first. Not a question; stands as written.
+
+Open, needing context first:
+
+6. **Falling back to older code after migration.** The deployment can fall back automatically to the image's older
+   code (section 4). That older code reads the old tables, which the new code stops writing, so in fallback mode it
+   would show data as of the migration. Choice: accept that stale view in fallback mode, or have the new code keep
+   writing the old tables for one release so fallback shows current data.
+8. **Void rules.** Undo is a `void` action naming an earlier action. Choice: the server accepts a `void` of any
+   action (the screen only offers undo for the latest pop), or the server accepts it only for the latest pop.
