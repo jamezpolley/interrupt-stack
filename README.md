@@ -95,19 +95,19 @@ Enter the values as plain text, with nothing after them. In Dockhand's variables
 
 ## How it works
 
-- Each stack item is its own record (`id`, `text`, `ts`, `at`, `removed`, `seq`, and an optional `origin`), so two devices pushing at once never overwrite each other. Removing an item sets a flag, so the removal reaches your other devices; undo clears it.
-- The browser keeps a local copy in IndexedDB and a list of unsent changes. Every action applies locally first, then syncs. The server announces new changes over a server-sent event stream so open devices update live.
-- If the server's database is ever replaced, clients notice (each database has an epoch ID, and sequence numbers going backwards also counts) and re-send everything they hold.
+- Everything you do is an **action** in an append-only log (a push, a pop, a drop, a correction, a delete, an undo ...), each with two times: `ts`, when the server received it, and `at`, when you say it happened. Neither is ever changed. What you see (the stack, Done today, Later, notes) is derived from the log by one shared reducer (`web/reduce.js`), on the server and in the browser alike, so two devices acting at once never overwrite each other. The design and its reasoning are in `docs/superpowers/specs/2026-11-23-data-model-design.md`.
+- The browser keeps its own journal of actions in IndexedDB (`interrupt-stack-journal`), with the ones the server has not acknowledged marked unsent. Every action applies locally first, then syncs, one action at a time, so several changes made offline reach the server as they were made. The server announces new changes over a server-sent event stream so open devices update live.
+- If the server's database is ever replaced, clients notice (each database has an epoch ID, and the log's numbering going backwards also counts) and re-send their whole journal, which rebuilds it.
 - The live-update stream reconnects with a backoff if a proxy answers a reconnect with an error, such as a 502 during a restart.
-- Order comes from each device's clock, as in the original prototype. A badly wrong clock can misorder items.
-- Conflicts resolve by arrival: the last change the server receives for an item wins, not the change made last. If a device was offline when it removed an item and reconnects after another device restored it, the older removal wins. Both devices then show the same thing.
-- A change the server refuses (a 4xx response) stays on the device and shows as "Sync problem" without blocking other changes. If the device's own storage fails, it says so and keeps working from memory.
+- Order on the stack comes from the time you said each push happened (`at`), clamped so it is never later than when the server received it. A badly wrong device clock cannot put a push in the future, and a pop reported before its push reads as a zero-length stay.
+- The log is applied in the order the server received it, so every device ends up showing the same thing. An undo is an action that cancels a named earlier action (a `void`), so nothing is ever erased.
+- An action the server refuses is reported by its id, dropped from the journal, and shown as "Sync problem" without blocking the others. If the device's own storage fails, it says so and keeps working from memory.
 
-API (JSON): `POST /api/sync` (the one sync call, below), `GET /api/events` (event stream; `sync` carries the shared counter), `GET /api/version`, `GET /healthz`. Kept so that copies of the app cached before the shared channel keep working, and not used by the current app: `GET /api/items?since=<seq>`, `PUT /api/items/<id>`, `GET /api/queue?since=<seq>`, `PUT /api/queue/<id>`, and the `seq` / `qseq` stream events.
+API (JSON): `POST /api/sync` (the one sync call, below), `GET /api/state?from=<ms>&to=<ms>` (the stack, Later, what ended in the window, the notes in it, and the stays that overlap them), `GET /api/day?from=<ms>&to=<ms>` (the same for one day, plus what was pushed in it), `GET /api/items/<id>/history` (every action that touched an item, oldest first, with both times), `GET /api/events` (event stream; `sync` carries the log's counter), `GET /api/version`, `GET /healthz`. The window is the client's (`from` inclusive, `to` exclusive, milliseconds), so the server needs no time zone. One stay on the stack is one row (`id`, or `<id>~1` for a second stay of the same item).
 
 ### One sync channel
 
-Every synced table (the stack, Later, and whatever comes next) shares one channel. A device sends its last cursor and its pending changes, `{epoch, cursor, changes: {items: {id: row}, queue: {id: row}}}`, to `POST /api/sync`; the server applies them (each through the same checks, event logging and time clamping as before) and answers with every row changed since the cursor, plus what it stored and what it refused, per table. One counter, shared by all tables, numbers every change; one `sync` stream event announces it. A change the server refuses is reported per row, so it never blocks the others. The client sends at most 100 changes per request. See `docs/superpowers/specs/2026-11-21-one-sync-channel-design.md` for the contract and the reasoning. To add a table: add it to `SYNCED_TABLES` and the registry in `server/store.ts`, and call `hub.table(...)` on the client (`web/core.js`).
+A device sends its last cursor and the actions it has not sent, `{epoch, cursor, actions: [{id, at, kind, target, ref?, data?}]}`, to `POST /api/sync`; the server checks each one, stamps it with its own clock, ignores an id it already holds (a resend), and answers with every action above the cursor (the device's own included, now stamped), plus what it refused. A copy of the app cached from before the actions log sends rows instead; it is told to reload. The `sync` stream event announces that the log's counter moved. The client sends at most 100 actions per request. The kinds are `push`, `push-again`, `pop`, `drop`, `edit`, `void`, `delete`, `undelete` (the stack), `note` (notes) and `later`, `dequeue`, `requeue`, `start` (Later); a kind the reducer does not know is ignored, so a new kind needs no migration.
 
 ## Swap, and Done today
 
@@ -116,7 +116,7 @@ Every synced table (the stack, Later, and whatever comes next) shares one channe
 
 ### Editing a finished item
 
-**Edit** in a finished item's details changes its title and the times of its own push and end rows. The "Paused" and "Back on top" rows are about other items, so they show the time but cannot be edited here; open that item to change it. In the details, **Close** is the highlighted default button (Push again, Edit and Delete are plain); once editing starts, Save is. Times are 24-hour `HH:MM` or `HH:MM:SS`; leave the seconds out and the original seconds stay. The totals recompute as you type, and **Save** is disabled while a time is in the future, an end comes before its start, or the title is empty. Items still on the stack cannot be edited. An edited item gets a small "edited" mark in Done today and in the details (also when an item pushed above it was edited, since that moves its numbers).
+**Edit** in a finished item's details changes its title and the times of its own push and end rows. The "Paused" and "Back on top" rows are about other items, so they show the time but cannot be edited here; open that item to change it. In the details, **Close** is the highlighted default button (Push again, Edit and Delete are plain); once editing starts, Save is. Times are 24-hour `HH:MM` or `HH:MM:SS`; leave the seconds out and the original seconds stay. The totals recompute as you type, and **Save** is disabled while a time is in the future, an end comes before its start, or the title is empty. Items still on the stack cannot have their times edited. An edited item gets a small "edited" mark in Done today and in the details (also when an item pushed above it was edited, since that moves its numbers).
 
 An edit is sent as a write marked `edit: true`. Without the mark the server keeps an existing item's stored text and push time, so a device holding an older copy cannot undo an edit by sending its state again. Each edit sets the item's `edited_at` and appends an `edit` event whose `detail` holds the old and new values; the original push and pop events are left as they were, so anything reading the log must apply `edit` events over them. If two devices edit the same item, the later write wins.
 
@@ -124,12 +124,12 @@ An edit is sent as a write marked `edit: true`. Without the mark the server keep
 
 A pile of things to do later, in no particular order (not a line: nothing about it means "next"). The newest addition shows on top. On screen it is labelled **Later**; that label is one constant (`QUEUE_LABEL` in `web/queue.js`).
 
-- **A separate structure from the stack.** Its own table (`queue`) and IndexedDB database (`interrupt-stack-queue`), but the same sync channel as the stack (one request, one counter, one status). `/api/items`, `/api/queue` and the `seq` / `qseq` stream events are kept as they were for copies of the app cached earlier, and `/api/items` still contains no queue items.
+- **A separate structure from the stack.** Targets with ids `q-<x>` and their own kinds of action (`later`, `dequeue`, `requeue`, `start`), but the same journal and sync channel as the stack (one request, one counter, one status). Later rows never appear on the stack.
 - **Layout.** Wide screens (700px and up) show two columns, Stack on the left and Later on the right. On a phone they are side-by-side panes: swipe sideways, or tap the "Later 3 ›" tab (Stack side) and "‹ Stack" tab (Later side). Done today stays under the stack. Both panes are reachable by keyboard (focusing a control in the other pane scrolls it into view).
 - **Its own input.** The Later pane has its own text box and **Add** button (Enter adds). The **Push / Swap** control is unchanged.
 - **Start and Drop.** Each row has **Start**, which puts it on top of the stack, and **Drop**, which removes it (with the usual Undo, which puts it back in the queue). Start has no Undo.
-- **Start is two writes in two structures, made safe to repeat.** (1) Push onto the stack under a derived id: the queue id `q-<x>` becomes the stack id `s-<x>`, and if that id already exists (even popped since) nothing is pushed again. (2) Tombstone the queue row, marked `started`. Step 1 is saved on the device before step 2 begins, and whenever the app next runs, any live queue row whose stack twin exists is tombstoned. So a crash or flaky network between the two cannot duplicate the task, and two devices starting the same row converge on one stack item. Dropped rows never touch the stack, so they never appear in Done today; started-then-popped ones appear as normal stack items.
-- **Events.** The same `events` table records `queue` (added), `dequeue` (dropped), `requeue` (drop undone) and `start` (started) for the `q-` id, in the same transaction as the change. A start also logs the stack item's `push` (id `s-<x>`), so the two join on the id suffix. No analysis yet.
+- **Start is two actions, made safe to repeat.** (1) Push onto the stack under a derived id: the queue id `q-<x>` becomes the stack id `s-<x>`, and if that id already exists (even popped since) nothing is pushed again. (2) A `start` action on the queue row. Step 1 is saved on the device before step 2 begins, and whenever the app next runs, any live queue row whose stack twin exists is tombstoned. So a crash or flaky network between the two cannot duplicate the task, and two devices starting the same row converge on one stack item. Dropped rows never touch the stack, so they never appear in Done today; started-then-popped ones appear as normal stack items.
+- **In the log.** `later`, `dequeue`, `requeue` and `start` actions on the `q-` id. A start also logs the stack item's `push` (id `s-<x>`), so the two join on the id suffix.
 - **Metrics.** `interrupt_stack_items{state="live"}` still counts the stack only. The queue has `interrupt_stack_queue_items{state="queued"|"removed"}`.
 - **Static version.** Works the same, entirely in the browser, with no network calls.
 
@@ -137,8 +137,8 @@ A pile of things to do later, in no particular order (not a line: nothing about 
 
 A short text entry (not empty, up to 200 characters) that never touches the stack and goes straight into **Done today**. The **+ Note** button on the Done today heading opens a text box: Enter or **Add** saves, Escape cancels. The time is always now.
 
-- **A separate table.** `notes` (ids `n-<x>`) on the same sync channel (`SYNCED_TABLES` entry plus `hub.table("notes", ...)`), last write wins, with tombstones (`removed`). It has its own IndexedDB database (`interrupt-stack-notes`). Notes are not counted in stack depth, the `live` metric, the timeline or time on top, and are never pushed or popped.
-- **Events.** One `note` event when a note is created (its text, dated at the note's time). An edit logs an `edit` event with `detail` (`{text?, ts?}` from/to) and sets `edited_at`, the same way item edits do, and is sent with `edit: true` so a stale copy cannot undo it. Removing logs nothing.
+- **Its own targets.** Notes (ids `n-<x>`) are `note` actions on the same journal and sync channel; deleting is a `delete` action and undo an `undelete`. Notes are not counted in stack depth, the `live` metric, the timeline or time on top, and are never pushed or popped.
+- **In the log.** A `note` action (its text, dated at the note's time); a correction of the text or the time is an `edit` action that points at what it corrects, so the original stays.
 - **Row.** One time (in the Ended column), a dash for the duration, a quiet "note" label. The row is a button like any Done today row, so links in the text are plain text there and are clickable in the panel that opens.
 - **Edit.** Tapping a note opens a small panel with its text and its time (24-hour `HH:MM` or `HH:MM:SS`, on the note's own day; the day buttons can be added once they are merged). No timeline, no Push again.
 - **Static version.** Notes live in the browser only.
@@ -147,9 +147,8 @@ A short text entry (not empty, up to 200 characters) that never touches the stac
 
 A **Delete** button removes an entry as if it had never existed: on the Working-on card and on each row underneath (next to Pop/Drop), and in the details of a finished entry and of a note. The usual 15 second Undo toast follows; there is no confirm. A deleted item is not on the stack, not in Done today, not in anyone's timeline or time on top (an item pushed above another and then deleted adds nothing to it), and not counted in depth or the `live` metric. Later rows keep their own Drop.
 
-- **Items** carry a `deleted` flag, synced like any change. A write that leaves `deleted` out never clears it (an older client or a stale copy cannot bring an item back); only an explicit `deleted: false` (Undo) does. An older cached client just sees a deleted item as an ordinary one.
-- **Notes** are deleted by their tombstone (`removed`).
-- **Events** stay append-only: nothing is erased. Deleting logs `delete` (at the time of deletion), Undo logs `undelete`.
+- **Items** are deleted by a `delete` action and brought back by an `undelete`. Nothing is erased: both stay in the log, and `GET /api/items/<id>/history` shows them.
+- **Notes** the same way.
 
 ## Copy data (Debug panel)
 
@@ -164,15 +163,15 @@ Devices keep a cached copy of the app so it opens instantly and offline, and the
 
 The version covers only the web files, so a server-only change does not raise the banner. It is computed when the server starts.
 
-## The event log
+## The log
 
-The server records every push, pop and restore (and the queue operations, see Queue) in an append-only `events` table in the same SQLite database (`/data/stack.db`), written in the same transaction as the change to the item. Columns: `n`, `ts` (when the server recorded it), `at` (when it happened, by the device's clock; both in ms since the epoch), `op`, `id`, `text`. Nothing reads it back yet.
+The server keeps every action in an append-only `actions` table in the same SQLite database (`/data/stack.db`). Columns: `n` (the order the server received them, and the cursor of the sync wire), `id` (made by the device, so a resend is recognised), `ts` (the server's clock when it received it), `at` (when the person says it happened, never later than `ts`), `kind`, `target` (the item, note or Later row), `ref` (the earlier action a correction or undo points at), `data` (JSON: the text, a corrected time ...) and `origin`.
 
-- Resending an item the server already has in the same state adds nothing.
-- A device only sends an item's latest state, so a push, pop and restore done offline between syncs shows up as the net change.
-- A device time later than the server's clock is clamped to it (and one before 1970 to 1970), not refused, so a phone with a wrong clock cannot get stuck in a sync error.
-- Whichever change reaches the server last wins, so a device resending an older state, such as a retry after a lost response, can log a `restore` for an item another device popped. Its time is never earlier than the item's previous event.
-- Only changes made after this feature shipped are logged.
+- Neither `ts` nor `at` ever changes. A correction is a new `edit` action with a `ref`; the effective time is the latest correction, and the original stays.
+- A resend of an action the server already has adds nothing.
+- A time later than the server's clock is clamped to it, not refused, so a phone with a wrong clock cannot get stuck in a sync error; an edit more than five minutes ahead is refused.
+- A pop reported before its push (clock skew, a push-then-pop within a second) is stored as sent and read as a zero-length stay.
+- The older `items`, `queue`, `notes` and `events` tables are no longer written. They are kept as they were, as the record of before the actions log; the first start of this version converts what they hold into actions (once, after copying the database to `stack.db.pre-actions`), marking rows from before the event log as guesses.
 
 ## Develop
 

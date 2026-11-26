@@ -21,96 +21,44 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-const put = (id: string, body: unknown) =>
-  app.fetch(
-    new Request(`http://t/api/items/${id}`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: typeof body === "string" ? body : JSON.stringify(body),
-    }),
-  );
 const get = (path: string) => app.fetch(new Request(`http://t${path}`));
-const item = (text = "task", ts = 100, removed = false) => ({ text, ts, removed });
+const sync = (actions: unknown[], cursor = 0) =>
+  app.fetch(new Request("http://t/api/sync", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cursor, actions }) }));
+const push = (id: string, text = "task", at = 100) => ({ id: `a-${id}`, kind: "push", target: id, at, data: { text } });
+const pop = (id: string, at = 200) => ({ id: `a-pop-${id}`, kind: "pop", target: id, at });
 
-describe("api", () => {
-  test("PUT then GET since 0 returns the item", async () => {
-    const res = await put("s-aaaa", item("hello", 7));
+describe("the sync call", () => {
+  test("stores actions and answers with the epoch, the cursor and every action above the cursor", async () => {
+    const res = await sync([push("s-aaaa")]);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ id: "s-aaaa", text: "hello", ts: 7, at: 7, removed: false, seq: 1 });
-    const list = await (await get("/api/items?since=0")).json();
-    expect(list).toEqual({ seq: 1, epoch: store.epoch, items: [{ id: "s-aaaa", text: "hello", ts: 7, at: 7, removed: false, seq: 1 }] });
+    const body = await res.json();
+    expect(body.epoch).toBe(store.epoch);
+    expect(body.cursor).toBe(1);
+    expect(body.actions.map((a: any) => a.id)).toEqual(["a-s-aaaa"]);
+    expect((await (await sync([], 1)).json()).actions).toEqual([]);
   });
 
-  test("GET /api/items carries the database epoch as a string", async () => {
-    const body = await (await get("/api/items")).json();
-    expect(typeof body.epoch).toBe("string");
-    expect(body.epoch.length).toBeGreaterThan(8);
-  });
-
-  test("PUT twice is idempotent", async () => {
-    await put("s-aaaa", item());
-    await put("s-aaaa", item());
-    const list = await (await get("/api/items")).json();
-    expect(list.items).toHaveLength(1);
-  });
-
-  test("PUT with 201-character text returns 400", async () => {
-    const res = await put("s-aaaa", item("x".repeat(201)));
+  test("a copy of the app that still sends rows is told to reload, not served", async () => {
+    const res = await app.fetch(new Request("http://t/api/sync", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cursor: 0, changes: { items: {} } }) }));
     expect(res.status).toBe(400);
-    expect(typeof (await res.json()).error).toBe("string");
+    expect((await res.json()).error).toMatch(/reload/);
   });
 
-  test("PUT with whitespace text returns 400", async () => {
-    expect((await put("s-aaaa", item("   "))).status).toBe(400);
+  test("a refused action is reported by id and the others still land", async () => {
+    const body = await (await sync([push("s-aaaa", "   "), push("s-bbbb", "fine")])).json();
+    expect(Object.keys(body.rejected)).toEqual(["a-s-aaaa"]);
+    expect(body.actions.map((a: any) => a.id)).toEqual(["a-s-bbbb"]);
   });
 
-  test("PUT with bad JSON returns 400", async () => {
-    const res = await put("s-aaaa", "{not json");
-    expect(res.status).toBe(400);
-    expect(typeof (await res.json()).error).toBe("string");
+  test("bad JSON is a 400 and an oversized body is a 413", async () => {
+    expect((await app.fetch(new Request("http://t/api/sync", { method: "POST", body: "{nope" }))).status).toBe(400);
+    expect((await app.fetch(new Request("http://t/api/sync", { method: "POST", body: JSON.stringify({ actions: [], pad: "x".repeat(300 * 1024) }) }))).status).toBe(413);
   });
 
-  test("PUT over 4 KB returns 413", async () => {
-    const res = await put("s-aaaa", JSON.stringify({ text: "x", ts: 1, removed: false, pad: "y".repeat(5000) }));
-    expect(res.status).toBe(413);
-  });
-
-  test("GET since beyond current seq returns empty items and the current seq", async () => {
-    await put("s-aaaa", item());
-    expect(await (await get("/api/items?since=99")).json()).toEqual({ seq: 1, epoch: store.epoch, items: [] });
-  });
-
-  test("GET with invalid since is treated as 0", async () => {
-    await put("s-aaaa", item());
-    const list = await (await get("/api/items?since=abc")).json();
-    expect(list.items).toHaveLength(1);
-  });
-});
-
-describe("origin over the API", () => {
-  test("PUT with an origin stores it and GET returns it", async () => {
-    await put("s-aaaa", { ...item("hello", 7, true) });
-    const res = await put("s-bbbb", { ...item("hello", 9), origin: "s-aaaa" });
-    expect((await res.json()).origin).toBe("s-aaaa");
-    const list = await (await get("/api/items?since=0")).json();
-    expect(list.items.map((i: any) => [i.id, i.origin])).toEqual([["s-aaaa", undefined], ["s-bbbb", "s-aaaa"]]);
-  });
-
-  test("an old-style PUT without the field (popping the clone) keeps the stored origin", async () => {
-    await put("s-bbbb", { ...item("hello", 9), origin: "s-aaaa" });
-    const res = await put("s-bbbb", { text: "hello", ts: 9, removed: true, at: 20 });
-    expect((await res.json()).origin).toBe("s-aaaa");
-    expect((await (await get("/api/items?since=0")).json()).items[0].origin).toBe("s-aaaa");
-  });
-
-  test("PUT with a different origin later does not change it", async () => {
-    await put("s-bbbb", { ...item("hello", 9), origin: "s-aaaa" });
-    expect((await (await put("s-bbbb", { ...item("hello", 9), origin: "s-cccc" })).json()).origin).toBe("s-aaaa");
-  });
-
-  test("a bad origin is a 400", async () => {
-    expect((await put("s-bbbb", { ...item(), origin: 5 })).status).toBe(400);
-    expect((await put("s-bbbb", { ...item(), origin: "x".repeat(500) })).status).toBe(400);
+  test("the old row endpoints are gone", async () => {
+    expect((await get("/api/items?since=0")).status).toBe(404);
+    expect((await get("/api/queue?since=0")).status).toBe(404);
+    expect((await app.fetch(new Request("http://t/api/items/s-aaaa", { method: "PUT", body: "{}" }))).status).toBe(404);
   });
 });
 
@@ -146,17 +94,16 @@ describe("static and health", () => {
 });
 
 describe("events", () => {
-  test("event stream emits a seq event on connect and after a PUT", async () => {
-    await put("s-aaaa", item());
+  test("the stream emits a sync event on connect and after a change", async () => {
+    await sync([push("s-aaaa")]);
     const res = await get("/api/events");
     expect(res.headers.get("content-type")).toContain("text/event-stream");
     const reader = res.body!.getReader();
     const dec = new TextDecoder();
     const next = async () => dec.decode((await reader.read()).value);
-
-    expect(await next()).toBe("event: seq\ndata: 1\n\nevent: sync\ndata: 1\n\n");
-    await put("s-bbbb", item());
-    expect(await next()).toBe("event: seq\ndata: 2\n\nevent: sync\ndata: 2\n\n");
+    expect(await next()).toBe("event: sync\ndata: 1\n\n");
+    await sync([push("s-bbbb")], 1);
+    expect(await next()).toBe("event: sync\ndata: 2\n\n");
     await reader.cancel();
   });
 });
@@ -181,24 +128,22 @@ describe("metrics", () => {
     expect(text).toContain("# TYPE interrupt_stack_http_requests_total counter");
   });
 
-  test("item gauges and seq follow writes", async () => {
-    await put("s-aaaa", item("a"));
-    await put("s-bbbb", item("b"));
-    await put("s-cccc", item("c", 3, true));
+  test("item gauges and the log counter follow writes, and the Later pile has its own gauge", async () => {
+    await sync([push("s-aaaa", "a"), push("s-bbbb", "b"), push("s-cccc", "c"), pop("s-cccc"), { id: "a-q1", kind: "later", target: "q-aaaa", at: 1, data: { text: "l" } }]);
     const text = await metrics();
     expect(sample(text, 'interrupt_stack_items{state="live"}')).toBe(2);
     expect(sample(text, 'interrupt_stack_items{state="removed"}')).toBe(1);
-    expect(sample(text, "interrupt_stack_seq")).toBe(3);
+    expect(sample(text, 'interrupt_stack_queue_items{state="queued"}')).toBe(1);
+    expect(sample(text, "interrupt_stack_seq")).toBe(5);
   });
 
   test("requests are counted by route, method and status code", async () => {
-    await put("s-aaaa", item());
-    await put("s-bbbb", item("   "));
-    await get("/api/items");
+    await sync([push("s-aaaa")]);
+    await sync([push("s-bbbb", "   ")]);
+    await get("/api/state");
     const text = await metrics();
-    expect(sample(text, 'interrupt_stack_http_requests_total{route="/api/items/:id",method="PUT",code="200"}')).toBe(1);
-    expect(sample(text, 'interrupt_stack_http_requests_total{route="/api/items/:id",method="PUT",code="400"}')).toBe(1);
-    expect(sample(text, 'interrupt_stack_http_requests_total{route="/api/items",method="GET",code="200"}')).toBe(1);
+    expect(sample(text, 'interrupt_stack_http_requests_total{route="/api/sync",method="POST",code="200"}')).toBe(2);
+    expect(sample(text, 'interrupt_stack_http_requests_total{route="/api/state",method="GET",code="200"}')).toBe(1);
   });
 
   test("unknown paths share one label so scanners cannot grow the metric set", async () => {
@@ -222,32 +167,6 @@ describe("metrics", () => {
     const t = sample(await metrics(), "interrupt_stack_start_time_seconds")!;
     expect(t).toBeGreaterThan(1_700_000_000);
     expect(t).toBeLessThanOrEqual(Date.now() / 1000);
-  });
-});
-
-describe("event log", () => {
-  test("a non-integer at is a 400 and nothing is logged", async () => {
-    const res = await put("s-aaaa", { text: "x", ts: 1, removed: false, at: "soon" });
-    expect(res.status).toBe(400);
-    expect(store.log()).toEqual([]);
-  });
-
-  test("a far-future or absurdly old at is accepted and clamped", async () => {
-    expect((await put("s-aaaa", { text: "x", ts: Date.now(), removed: false, at: Date.now() + 86_400_000 * 365 })).status).toBe(200);
-    expect((await put("s-bbbb", { text: "y", ts: 1, removed: true, at: -9_000_000_000_000_000 })).status).toBe(200);
-    for (const e of store.log()) {
-      expect(e.at).toBeGreaterThanOrEqual(0);
-      expect(e.at).toBeLessThanOrEqual(e.ts);
-    }
-  });
-
-  test("a PUT is logged in the same call", async () => {
-    await put("s-aaaa", item("a", 5));
-    await put("s-aaaa", { ...item("a", 5, true), at: 6 });
-    expect(store.log().map((e) => [e.op, e.at])).toEqual([
-      ["push", 5],
-      ["pop", 6],
-    ]);
   });
 });
 
@@ -440,74 +359,6 @@ describe("update now (restart to apply an update)", () => {
   });
 });
 
-describe("queue api", () => {
-  const putQ = (id: string, body: unknown) =>
-    app.fetch(new Request(`http://t/api/queue/${id}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }));
-  const qitem = (text = "later", ts = 100, removed = false, started?: boolean) => ({ text, ts, removed, ...(started === undefined ? {} : { started }) });
-
-  test("PUT /api/queue/:id then GET /api/queue returns it with its own seq and the epoch", async () => {
-    const res = await putQ("q-aaaa", qitem("later", 7));
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ id: "q-aaaa", text: "later", ts: 7, at: 7, removed: false, started: false, seq: 1 });
-    const list = await (await get("/api/queue?since=0")).json();
-    expect(list.seq).toBe(1);
-    expect(list.epoch).toBe(store.epoch);
-    expect(list.items).toHaveLength(1);
-    expect((await (await get("/api/queue?since=1")).json()).items).toEqual([]);
-  });
-
-  test("old clients see no queue items: /api/items and its stream are untouched", async () => {
-    await put("s-aaaa", item("stack", 1));
-    await putQ("q-aaaa", qitem("later", 2));
-    await putQ("q-bbbb", qitem("later two", 3));
-    const list = await (await get("/api/items?since=0")).json();
-    expect(list).toEqual({ seq: 1, epoch: store.epoch, items: [{ id: "s-aaaa", text: "stack", ts: 1, at: 1, removed: false, seq: 1 }] });
-    // An old client sends the old body shape and it still works; unknown fields are ignored.
-    expect((await put("s-cccc", { text: "x", ts: 5, removed: false })).status).toBe(200);
-    expect((await put("s-dddd", { text: "x", ts: 5, removed: false, queued: true })).status).toBe(200);
-    const after = await (await get("/api/items?since=0")).json();
-    expect(after.items.map((i: any) => i.id)).toEqual(["s-aaaa", "s-cccc", "s-dddd"]);
-    expect(after.items.every((i: any) => !("queued" in i))).toBe(true);
-    // A queue id is not accepted on the stack route.
-    expect((await put("q-aaaa", item())).status).toBe(400);
-  });
-
-  test("the stack seq stream stays stack-only; queue changes send their own qseq event", async () => {
-    await put("s-aaaa", item());
-    const res = await get("/api/events");
-    const reader = res.body!.getReader();
-    const dec = new TextDecoder();
-    const next = async () => dec.decode((await reader.read()).value);
-    expect(await next()).toBe("event: seq\ndata: 1\n\nevent: sync\ndata: 1\n\n");
-    await putQ("q-aaaa", qitem());
-    // the queue row took the next number from the counter every table shares
-    expect(await next()).toBe("event: qseq\ndata: 2\n\nevent: sync\ndata: 2\n\n");
-    await put("s-bbbb", item());
-    expect(await next()).toBe("event: seq\ndata: 3\n\nevent: sync\ndata: 3\n\n");
-    await reader.cancel();
-  });
-
-  test("queue validation errors are 400", async () => {
-    expect((await putQ("q-aaaa", qitem("x".repeat(201)))).status).toBe(400);
-    expect((await putQ("q-aaaa", { text: "", ts: 1 })).status).toBe(400);
-    expect((await putQ("q-aaaa", { text: "x", ts: 1, started: "yes" })).status).toBe(400);
-  });
-
-  test("metrics: live is the stack only; the queue has its own gauge", async () => {
-    await put("s-aaaa", item());
-    await putQ("q-aaaa", qitem());
-    await putQ("q-bbbb", qitem("b", 1, true));
-    await putQ("q-cccc", qitem("c", 1, true, true));
-    const text = await (await get("/metrics")).text();
-    expect(text).toContain('interrupt_stack_items{state="live"} 1\n');
-    expect(text).toContain('interrupt_stack_items{state="removed"} 0\n');
-    expect(text).not.toContain('interrupt_stack_items{state="queued"');
-    expect(text).toContain('interrupt_stack_queue_items{state="queued"} 1\n');
-    expect(text).toContain('interrupt_stack_queue_items{state="removed"} 2\n');
-    expect(text).toContain('route="/api/queue/:id"');
-  });
-});
-
 describe("login route", () => {
   test("GET /login redirects to the app root, relative, uncacheable, with nothing else", async () => {
     const res = await get("/login");
@@ -561,22 +412,3 @@ describe("version base (the commit the image was built from)", () => {
   });
 });
 
-describe("editing over the API", () => {
-  test("PUT with edit:true corrects a finished item and returns edited_at; without it the old copy cannot undo it", async () => {
-    await put("s-aaaa", { text: "old", ts: 1000, removed: false });
-    await put("s-aaaa", { text: "old", ts: 1000, removed: true, at: 5000 });
-    const edited = await (await put("s-aaaa", { text: "new", ts: 1000, removed: true, at: 3000, edit: true })).json();
-    expect(edited).toMatchObject({ text: "new", at: 3000 });
-    expect(typeof edited.edited_at).toBe("number");
-    const stale = await (await put("s-aaaa", { text: "old", ts: 1000, removed: true, at: 5000 })).json();
-    expect(stale).toMatchObject({ text: "new", at: 3000, edited_at: edited.edited_at });
-  });
-
-  test("an edit that ends before it starts is a 400", async () => {
-    await put("s-aaaa", { text: "x", ts: 1000, removed: false });
-    await put("s-aaaa", { text: "x", ts: 1000, removed: true, at: 5000 });
-    const res = await put("s-aaaa", { text: "x", ts: 1000, removed: true, at: 500, edit: true });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toMatch(/before the start/);
-  });
-});
