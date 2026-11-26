@@ -292,11 +292,10 @@ Settled by the owner (review of 2026-11-26):
 10. **No ORM; numbered migrations with plain `bun:sqlite`.** Not a question; stands as written.
 11. **Order of work:** the four steps in section 4 as stacked PRs, step 1 first. Not a question; stands as written.
 
-Open, needing context first:
+6. **Falling back to older code after migration:** accept the stale view in fallback mode (recommended, accepted).
+   The older code reads the old tables, which stop changing at the migration; the migration first copies the
+   database to `stack.db.pre-actions`. No second write path.
+8. **Void rules:** the server accepts a `void` of any action; the screen only offers undo for the latest pop
+   (recommended, accepted). The voided action and the void both stay in the log.
 
-6. **Falling back to older code after migration.** The deployment can fall back automatically to the image's older
-   code (section 4). That older code reads the old tables, which the new code stops writing, so in fallback mode it
-   would show data as of the migration. Choice: accept that stale view in fallback mode, or have the new code keep
-   writing the old tables for one release so fallback shows current data.
-8. **Void rules.** Undo is a `void` action naming an earlier action. Choice: the server accepts a `void` of any
-   action (the screen only offers undo for the latest pop), or the server accepts it only for the latest pop.
+All eleven decisions are settled. Section 3 (detailed time semantics) is still to be reviewed by the owner.
