@@ -253,6 +253,14 @@ points at the one it corrects, so what was first reported stays in the log.
 Still to do: retire the old wire and tables (step 4), and the read endpoints (step 3). `events` is still written for old-wire
 writes only; the actions wire does not write it.
 
+### Steps 3 and 4: status
+
+Built on this branch: `GET /api/state`, `GET /api/day` and `GET /api/items/:id/history` (step 3), and the retirement of the old wire
+(step 4): `POST /api/sync` takes actions only (a copy of the app that still sends rows is told to reload), `/api/items`,
+`/api/queue` and the `seq`/`qseq` stream events are gone, the store has no row tables to write (they are kept as they were, as the
+record of before the log), and the old client sync is deleted. A device's unsent rows are carried into the journal as actions
+once (`web/upgrade.js`). `counts()` for the metrics now come from the reducer.
+
 ### Steps (each a PR, stacked)
 
 1. **Reducer and log, server side.** `actions` table, shared `reduce.js`, projections, rebuild function, numbered

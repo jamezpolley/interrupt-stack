@@ -17,95 +17,20 @@ afterEach(() => {
   while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
 
-/** The reducer's view must agree with what the old row tables say, for every item. */
-function expectAgrees(s: Store) {
+/** The reducer's view must agree with the old row tables the database was converted from. */
+function expectAgrees(path: string, s: Store) {
+  const d = new Database(path, { readonly: true });
+  const rows = d.query("SELECT id, text, ts, at, removed, deleted FROM items").all() as { id: string; text: string; ts: number; at: number | null; removed: number; deleted: number }[];
+  d.close();
   const st = s.state() as any;
-  for (const row of s.since(0).items) {
+  for (const row of rows) {
     const it = st.items[row.id];
     expect(it, row.id).toBeDefined();
-    expect(it.text).toBe(row.text);
-    expect(it.live).toBe(!row.removed);
-    expect(it.deleted).toBe(row.deleted === true);
-    const last = it.intervals[it.intervals.length - 1];
-    expect(last.start.at).toBe(row.ts);
-    if (row.removed) expect(last.end.at).toBe(Math.max(row.at, row.ts));
+    expect(it.live).toBe(row.removed === 0);
+    expect(it.deleted).toBe(row.deleted === 1);
   }
-  expect(Object.keys(st.items).sort()).toEqual(s.since(0).items.map((r) => r.id).sort());
+  expect(Object.keys(st.items).sort()).toEqual(rows.map((r) => r.id).sort());
 }
-
-describe("actions are written alongside the old rows", () => {
-  test("push, pop and undo", () => {
-    let t = 1000;
-    const s = mem(() => t);
-    s.upsert("s-aaaa", { text: "write", ts: 1000, removed: false });
-    t = 2000;
-    s.upsert("s-aaaa", { text: "write", ts: 1000, removed: true, at: 2000 });
-    expectAgrees(s);
-    t = 3000;
-    s.upsert("s-aaaa", { text: "write", ts: 1000, removed: false, at: 3000 }); // the app's undo
-    expectAgrees(s);
-    const kinds = s.actions().map((a) => a.kind);
-    expect(kinds).toEqual(["push", "pop", "void"]);
-    expect((s.state() as any).items["s-aaaa"].intervals).toHaveLength(1);
-  });
-
-  test("every action carries the server time and the person's time, and the person's time is never later", () => {
-    const s = mem(() => 5000);
-    s.upsert("s-aaaa", { text: "x", ts: 1000, removed: true, at: 9999 }); // a device clock ahead of the server
-    for (const a of s.actions()) {
-      expect(a.ts).toBe(5000);
-      expect(a.at).toBeLessThanOrEqual(a.ts);
-    }
-  });
-
-  test("an edit becomes edit actions that point at the push and pop, and the originals stay", () => {
-    let t = 1000;
-    const s = mem(() => t);
-    s.upsert("s-aaaa", { text: "old", ts: 1000, removed: false });
-    t = 2000;
-    s.upsert("s-aaaa", { text: "old", ts: 1000, removed: true, at: 2000 });
-    t = 3000;
-    s.upsert("s-aaaa", { text: "new", ts: 900, removed: true, at: 2100, edit: true });
-    expectAgrees(s);
-    const acts = s.actions();
-    expect(acts.filter((a) => a.kind === "edit")).toHaveLength(3);
-    const push = acts.find((a) => a.kind === "push")!;
-    expect(push.at).toBe(1000); // never rewritten
-    expect((s.state() as any).items["s-aaaa"].intervals[0].start.at).toBe(900);
-  });
-
-  test("delete and undelete, notes and the Later queue", () => {
-    let t = 1000;
-    const s = mem(() => t);
-    s.upsert("s-aaaa", { text: "x", ts: 1000, removed: false });
-    t = 1100;
-    s.upsert("s-aaaa", { text: "x", ts: 1000, removed: false, deleted: true });
-    s.upsertNote("n-aaaa", { text: "a note", ts: 1100 });
-    s.upsertQueue("q-aaaa", { text: "later", ts: 1100, removed: false });
-    t = 1200;
-    s.upsertQueue("q-aaaa", { text: "later", ts: 1100, removed: true, started: true, at: 1200 });
-    const st = s.state() as any;
-    expect(st.items["s-aaaa"].deleted).toBe(true);
-    expect(st.notes["n-aaaa"]).toMatchObject({ text: "a note", removed: false });
-    expect(st.queue["q-aaaa"]).toMatchObject({ removed: true, started: true });
-    expectAgrees(s);
-  });
-
-  test("a push-then-pop from a device whose clock is ahead no longer reads as impossible", () => {
-    const s = mem(() => 2000);
-    s.upsert("s-aaaa", { text: "x", ts: 2500, removed: true, at: 2300 }); // sent ahead of the server's clock
-    const it = (s.state() as any).items["s-aaaa"];
-    expect(it.intervals[0].end.at).toBeGreaterThanOrEqual(it.intervals[0].start.at);
-  });
-
-  test("resent actions are ignored (the same id twice)", () => {
-    const s = mem(() => 1000);
-    s.upsert("s-aaaa", { text: "x", ts: 1000, removed: false });
-    const before = s.actions().length;
-    s.upsert("s-aaaa", { text: "x", ts: 1000, removed: false }); // nothing changed: nothing is logged
-    expect(s.actions().length).toBe(before);
-  });
-});
 
 describe("migration 1: the existing database becomes an actions log", () => {
   function legacy(path: string) {
@@ -161,7 +86,7 @@ describe("migration 1: the existing database becomes an actions log", () => {
     const s = openStore(path);
     open.push(s);
     const st = s.state() as any;
-    expectAgrees(s);
+    expectAgrees(path, s);
     expect(st.items["s-aaaa"].intervals[0]).toMatchObject({ start: { at: 1000 }, end: { at: 2000, kind: "pop" } });
     expect(st.items["s-bbbb"]).toMatchObject({ live: true, origin: "s-aaaa" });
     expect(st.items["s-cccc"].live).toBe(false); // synthesised
@@ -216,15 +141,6 @@ describe("migration 1: the existing database becomes an actions log", () => {
   });
 });
 
-describe("old behaviour is unchanged", () => {
-  test("the rows and events the old wire serves are exactly as before", () => {
-    const s = mem(() => 1000);
-    s.upsert("s-aaaa", { text: "x", ts: 1000, removed: false });
-    expect(s.since(0).items).toEqual([{ id: "s-aaaa", text: "x", ts: 1000, at: 1000, removed: false, seq: 1 }]);
-    expect(s.log().map((e) => e.op)).toEqual(["push"]);
-  });
-});
-
 describe("the actions wire (syncActions)", () => {
   const act = (id: string, kind: string, target: string, at: number, extra: Record<string, unknown> = {}) => ({ id, kind, target, at, ...extra });
 
@@ -247,27 +163,10 @@ describe("the actions wire (syncActions)", () => {
     expect(s.actions()).toHaveLength(1);
   });
 
-  test("the old row tables follow, so the old wire sees the same data", () => {
-    let t = 5000;
-    const s = mem(() => t);
-    s.syncActions(0, [act("a-one1", "push", "s-aaaa", 4000, { data: { text: "write" } })]);
-    expect(s.since(0).items).toMatchObject([{ id: "s-aaaa", text: "write", ts: 4000, removed: false }]);
-    t = 6000;
-    s.syncActions(0, [act("a-two2", "pop", "s-aaaa", 5500)]);
-    expect(s.since(0).items[0]).toMatchObject({ removed: true, at: 5500 });
-    s.syncActions(0, [act("a-vo13", "void", "s-aaaa", 5800, { ref: "a-two2" })]); // the undo
-    expect(s.since(0).items[0]).toMatchObject({ removed: false });
-    s.syncActions(0, [act("a-del4", "delete", "s-aaaa", 5900)]);
-    expect(s.since(0).items[0]).toMatchObject({ deleted: true });
-    s.syncActions(0, [act("a-nt15", "note", "n-aaaa", 5000, { data: { text: "hi" } }), act("a-lt16", "later", "q-aaaa", 5000, { data: { text: "someday" } })]);
-    expect(s.upsertNote("n-aaaa", { text: "hi", ts: 5000 })).toMatchObject({ text: "hi", removed: false });
-    expect(s.queueSince(0).items[0]).toMatchObject({ id: "q-aaaa", removed: false });
-  });
-
   test("edits point at the action they correct, and the original stays", () => {
     const s = mem(() => 9000);
     s.syncActions(0, [act("a-one1", "push", "s-aaaa", 1000, { data: { text: "x" } }), act("a-two2", "pop", "s-aaaa", 2000), act("a-ed13", "edit", "s-aaaa", 8000, { ref: "a-two2", data: { at: 2500 } })]);
-    expect(s.since(0).items[0]).toMatchObject({ ts: 1000, at: 2500, removed: true });
+    expect((s.state() as any).items["s-aaaa"].intervals[0]).toMatchObject({ start: { at: 1000 }, end: { at: 2500 } });
     expect(s.actions().find((a) => a.id === "a-two2")!.at).toBe(2000);
   });
 

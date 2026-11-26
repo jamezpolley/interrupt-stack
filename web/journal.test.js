@@ -62,6 +62,7 @@ function world(serverNow) {
   return { server, mkClient };
 }
 
+const served = (w) => Object.values(w.server.current.store.state().items).map((i) => ({ text: i.text, live: i.live, deleted: i.deleted, first: i.intervals[0] }));
 const texts = (c) => c.sync.stack().map((i) => i.text);
 const started = async (c) => (await c.sync.start(), c);
 
@@ -74,11 +75,11 @@ describe("the journal and the stack over it", () => {
     await a.sync.push("first");
     expect(texts(a)).toEqual(["first"]);
     expect(a.sync.status().pending).toBe(1);
-    expect(w.server.current.store.since(0).items).toEqual([]);
+    expect(served(w)).toEqual([]);
     a.ctl.online = true;
     await a.sync.syncNow();
     expect(a.sync.status().pending).toBe(0);
-    expect(w.server.current.store.since(0).items.map((i) => i.text)).toEqual(["first"]);
+    expect(served(w).map((i) => i.text)).toEqual(["first"]);
   });
 
   test("two devices converge, and each sees what the other did", async () => {
@@ -216,7 +217,7 @@ describe("the journal and the stack over it", () => {
     const log = w.server.current.store.actions();
     expect(log.find((x) => x.kind === "push").at).toBe(done.ts); // never rewritten
     expect(log.filter((x) => x.kind === "edit")).toHaveLength(3);
-    expect(w.server.current.store.since(0).items[0]).toMatchObject({ text: "new", ts: done.ts - 1000 });
+    expect(served(w)[0]).toMatchObject({ text: "new", first: { start: { at: done.ts - 1000 } } });
   });
 
   test("an item on the stack can have its title changed, but not its times", async () => {
@@ -286,7 +287,7 @@ describe("the journal and the stack over it", () => {
     await b.sync.start();
     expect(texts(b)).toEqual(["unsent"]);
     await b.sync.syncNow();
-    expect(w.server.current.store.since(0).items.map((i) => i.text)).toEqual(["unsent"]);
+    expect(served(w).map((i) => i.text)).toEqual(["unsent"]);
   });
 
   test("a fresh device downloads everything", async () => {
@@ -351,7 +352,7 @@ describe("the Later queue and notes over the journal", () => {
     await a.notes.restore(n.id);
     expect(a.notes.notes().map((x) => x.text)).toEqual(["hi"]);
     await a.sync.syncNow();
-    expect(w.server.current.store.upsertNote(n.id, { text: "hi", ts: n.ts - 5000 })).toMatchObject({ removed: false });
+    expect((w.server.current.store.state().notes)[n.id]).toMatchObject({ text: "hi", removed: false, at: n.ts - 5000 });
   });
 });
 

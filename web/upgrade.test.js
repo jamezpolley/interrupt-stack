@@ -52,7 +52,7 @@ describe("actionsFromRows", () => {
 describe("upgradeFromRows", () => {
   test("a device with nothing in its old databases is marked done and does nothing", async () => {
     const m = meta();
-    expect(await upgradeFromRows({ old: { stack: oldStorage(), queue: oldStorage(), notes: oldStorage() }, meta: m, fetch: async () => { throw new Error("no network use"); } })).toBe("done");
+    expect(await upgradeFromRows({ old: { stack: oldStorage(), queue: oldStorage(), notes: oldStorage() }, meta: m, journal: null })).toBe("done");
     expect(await m.getMeta("legacyDone")).toBe(true);
   });
 
@@ -61,13 +61,13 @@ describe("upgradeFromRows", () => {
     const sync = createSync({ storage: journalStorage(), fetch: async () => { throw new Error("no"); }, local: true });
     await sync.start();
     const old = { stack: oldStorage([{ id: "s-a", text: "kept", ts: 100, at: 200, removed: true }, { id: "s-b", text: "on the stack", ts: 300, at: 300, removed: false }]), queue: oldStorage(), notes: oldStorage() };
-    expect(await upgradeFromRows({ old, meta: m, journal: sync.journal, fetch: async () => {}, local: true })).toBe("imported");
+    expect(await upgradeFromRows({ old, meta: m, journal: sync.journal, local: true })).toBe("imported");
     expect(sync.stack().map((r) => r.text)).toEqual(["on the stack"]);
     expect(sync.allItems().map((r) => r.text).sort()).toEqual(["kept", "on the stack"]);
-    expect(await upgradeFromRows({ old, meta: m, journal: sync.journal, fetch: async () => {}, local: true })).toBe("done");
+    expect(await upgradeFromRows({ old, meta: m, journal: sync.journal, local: true })).toBe("done");
   });
 
-  test("a server device sends what it had not sent, over the old wire, and is then done", async () => {
+  test("a server device carries over only the rows it had not sent, as actions that sync in the usual way", async () => {
     const store = openStore(":memory:");
     const dir = mkdtempSync(join(tmpdir(), "ist-up-"));
     writeFileSync(join(dir, "index.html"), "x");
@@ -75,17 +75,26 @@ describe("upgradeFromRows", () => {
     const app = createApp(store, { webDir: dir });
     const fetch = (path, init) => app.fetch(new Request("http://t" + path, init));
     const m = meta();
-    const old = { stack: oldStorage([{ id: "s-unsent", text: "made offline", ts: 1000, at: 1000, removed: false, seq: 0 }], ["s-unsent"]), queue: oldStorage(), notes: oldStorage() };
-    expect(await upgradeFromRows({ old, meta: m, fetch })).toBe("sent");
-    expect(store.since(0).items.map((i) => i.text)).toEqual(["made offline"]);
-    expect(store.actions().map((a) => a.kind)).toEqual(["push"]); // the server turned it into an action
+    const old = {
+      stack: oldStorage([{ id: "s-unsent", text: "made offline", ts: 1000, at: 1000, removed: false, seq: 0 }, { id: "s-sent", text: "already on the server", ts: 900, at: 900, removed: false, seq: 3 }], ["s-unsent"]),
+      queue: oldStorage(),
+      notes: oldStorage(),
+    };
+    const sync = createSync({ storage: journalStorage(), fetch });
+    await sync.start();
+    expect(await upgradeFromRows({ old, meta: m, journal: sync.journal })).toBe("carried");
+    await sync.syncNow();
+    expect(store.actions().map((a) => [a.kind, a.target])).toEqual([["push", "s-unsent"]]);
+    expect(sync.stack().map((r) => r.text)).toEqual(["made offline"]);
     expect(await m.getMeta("legacyDone")).toBe(true);
   });
 
-  test("a server device that cannot reach the server waits and tries again next start", async () => {
+  test("a server device with nothing unsent is just marked done", async () => {
     const m = meta();
-    const old = { stack: oldStorage([{ id: "s-unsent", text: "x", ts: 1000, at: 1000, removed: false, seq: 0 }], ["s-unsent"]), queue: oldStorage(), notes: oldStorage() };
-    expect(await upgradeFromRows({ old, meta: m, fetch: async () => { throw new TypeError("down"); } })).toBe("waiting");
-    expect(await m.getMeta("legacyDone", false)).toBe(false);
+    const sync = createSync({ storage: journalStorage(), fetch: async () => { throw new TypeError("down"); } });
+    await sync.start();
+    const old = { stack: oldStorage([{ id: "s-sent", text: "on the server", ts: 900, at: 900, removed: false, seq: 3 }]), queue: oldStorage(), notes: oldStorage() };
+    expect(await upgradeFromRows({ old, meta: m, journal: sync.journal })).toBe("done");
+    expect(sync.stack()).toEqual([]);
   });
 });

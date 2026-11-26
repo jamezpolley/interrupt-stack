@@ -1,13 +1,7 @@
 // Moving a device from the old row databases (items, queue, notes) to the journal. Runs once per device, before the
-// journal starts.
-//
-// Server version: the server already holds everything it was sent (it converted its own rows into actions when it was
-// upgraded), so all that can be lost is what this device had not sent yet. The old sync code is used one last time to
-// send exactly that, over the old wire, which the server still serves. Static version: nothing is held anywhere else, so the
-// rows become actions in the journal. Either way it is marked done, so it never runs again.
-import { createSync as createLegacySync } from "./legacy-sync.js";
-import { createQueue as createLegacyQueue } from "./legacy-queue.js";
-import { createNotes as createLegacyNotes } from "./legacy-notes.js";
+// journal starts. The static version holds everything only here, so all of its rows become actions. A server device's
+// rows are already on the server (it converted them itself), so only the rows this device had not sent yet are carried over,
+// as actions, and sent in the usual way. Either way it is marked done, so it never runs again.
 
 /** The actions the old rows amount to. Ids are derived from the rows' ids, so doing it twice is the same as once. */
 export function actionsFromRows({ items = [], queue = [], notes = [] }) {
@@ -32,43 +26,23 @@ const DONE = "legacyDone";
 
 /**
  * `old` is `{ stack, queue, notes }`, the three old row storages; `meta` is `{ getMeta, putMeta }` of the journal's storage;
- * `journal` is the journal (only used by the static version). Returns "done", "imported", "sent" or "waiting" (a
- * server device that could not reach the server; the next start tries again).
+ * `journal` is the journal. Returns "done" (nothing to do), "imported" (the static version's rows) or "carried" (a server
+ * device's unsent rows).
  */
-export async function upgradeFromRows({ old, meta, journal, fetch, online = () => true, local = false }) {
+export async function upgradeFromRows({ old, meta, journal, local = false }) {
   if (await meta.getMeta(DONE, false)) return "done";
   const read = async (s) => {
     try {
-      return await s.load();
+      const x = await s.load();
+      return { items: x.items ?? [], dirty: new Set(x.dirty ?? []) };
     } catch {
-      return { items: [], dirty: [] };
+      return { items: [], dirty: new Set() };
     }
   };
   const [stack, queue, notes] = await Promise.all([read(old.stack), read(old.queue), read(old.notes)]);
-  const anything = [stack, queue, notes].some((x) => x.items?.length || x.dirty?.length);
-  if (!anything) {
-    await meta.putMeta(DONE, true);
-    return "done";
-  }
-  if (local) {
-    await journal.append(actionsFromRows({ items: stack.items, queue: queue.items, notes: notes.items }));
-    await meta.putMeta(DONE, true);
-    return "imported";
-  }
-  if (![stack, queue, notes].some((x) => x.dirty?.length)) {
-    await meta.putMeta(DONE, true);
-    return "done";
-  }
-  const s = createLegacySync({ storage: old.stack, fetch, online });
-  const q = createLegacyQueue({ storage: old.queue, stack: s });
-  const n = createLegacyNotes({ storage: old.notes, stack: s });
-  await s.start();
-  await q.start();
-  await n.start();
-  await s.syncNow();
-  if (s.status().pending === 0 && s.status().state !== "offline") {
-    await meta.putMeta(DONE, true);
-    return "sent";
-  }
-  return "waiting";
+  const pick = (x) => (local ? x.items : x.items.filter((r) => x.dirty.has(r.id)));
+  const actions = actionsFromRows({ items: pick(stack), queue: pick(queue), notes: pick(notes) });
+  if (actions.length) await journal.append(actions);
+  await meta.putMeta(DONE, true);
+  return actions.length ? (local ? "imported" : "carried") : "done";
 }

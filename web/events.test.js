@@ -26,11 +26,9 @@ class FakeSource {
 function setup(opts = {}) {
   FakeSource.all = [];
   const timers = [];
-  const seqs = [];
   const stream = createEventStream({
     url: "/api/events",
     make: (u) => new FakeSource(u),
-    onSeq: () => seqs.push(1),
     schedule: (fn, ms) => {
       const t = { fn, ms, cancelled: false };
       timers.push(t);
@@ -43,17 +41,10 @@ function setup(opts = {}) {
   });
   const live = () => timers.filter((t) => !t.cancelled);
   const current = () => FakeSource.all[FakeSource.all.length - 1];
-  return { stream, timers, live, seqs, current };
+  return { stream, timers, live, current };
 }
 
 describe("event stream", () => {
-  test("a seq event calls onSeq", () => {
-    const { stream, current, seqs } = setup();
-    stream.connect();
-    current().emit("seq");
-    expect(seqs).toHaveLength(1);
-  });
-
   test("a stream the browser has closed after an error is reconnected after a delay", () => {
     const { stream, current, live } = setup();
     stream.connect();
@@ -134,26 +125,12 @@ describe("event stream", () => {
   });
 });
 
-describe("queue events", () => {
-  test("qseq goes to onQueueSeq and seq to onSeq, independently", () => {
-    FakeSource.all = [];
-    const got = [];
-    const stream = createEventStream({ url: "/api/events", make: (u) => new FakeSource(u), onSeq: () => got.push("seq"), onQueueSeq: () => got.push("qseq") });
-    stream.connect();
-    FakeSource.all[0].emit("qseq");
-    FakeSource.all[0].emit("seq");
-    expect(got).toEqual(["qseq", "seq"]);
-  });
-});
-
 describe("shared channel event", () => {
-  test("the `sync` event goes to onSync; seq and qseq are optional", () => {
+  test("the `sync` event goes to onSync", () => {
     FakeSource.all = [];
     const got = [];
     const stream = createEventStream({ url: "/api/events", make: (u) => new FakeSource(u), onSync: () => got.push("sync") });
     stream.connect();
-    FakeSource.all[0].emit("seq");
-    FakeSource.all[0].emit("qseq");
     FakeSource.all[0].emit("sync");
     expect(got).toEqual(["sync"]);
   });

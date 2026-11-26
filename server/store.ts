@@ -5,45 +5,10 @@ import { CREATE_ACTIONS, convertLegacy, makeRecorder, toAction, type Action } fr
 
 export type { Action };
 
-/** `at` is the device's clock when the item last changed state (equal to `ts` for a fresh push). */
-export type Item = { id: string; text: string; ts: number; at: number; removed: boolean; seq: number; origin?: string; edited_at?: number; deleted?: boolean };
-/**
- * `origin` is the id of the item this one was pushed again from. It is set once, when the row is created, and never
- * changes. Absent or null means "not given": a write without it (an older client) leaves a stored origin untouched.
- */
-/**
- * `edit: true` marks a deliberate correction of an existing item's text, ts or (for a finished item) end time.
- * Without it, a write to an existing row keeps the stored text and ts, so a client holding an old copy (an older
- * build, or a device that has not synced yet) cannot undo an edit by sending its state again. A new row ignores it.
- */
-export type ItemInput = { text: string; ts: number; removed: boolean; at?: number; origin?: string | null; edit?: boolean; deleted?: boolean };
-/**
- * `deleted: true` hides the item everywhere, as if it had never been made (it stays in the database and in the event log).
- * Leaving it out never changes it, so an older client or a stale copy cannot bring a deleted item back; only an explicit
- * `deleted: false` (undo) does.
- */
-export type LogEvent = { n: number; ts: number; at: number; op: "push" | "pop" | "restore" | "queue" | "dequeue" | "requeue" | "start" | "edit" | "note" | "delete" | "undelete"; id: string; text: string; detail?: string };
-
-/**
- * The queue is a pile of things to do later, kept apart from the stack: its own table, its own `seq` numbering and
- * its own API, so an old client that knows nothing of it never sees it. A removed row is a tombstone; `started` says
- * it was removed because it was started (pushed onto the stack as `s-` plus the rest of its id), not dropped.
- */
-export type QueueItem = { id: string; text: string; ts: number; at: number; removed: boolean; started: boolean; seq: number };
-export type QueueInput = { text: string; ts: number; removed: boolean; started?: boolean; at?: number };
-
-/**
- * A note is a short text entry with a time ("ts"), kept apart from the stack: it never goes on it and is never on top.
- * Last write wins. `edit: true` marks a deliberate correction, as for items; without it a write to an existing row
- * keeps the stored text and ts. A removed row is a tombstone.
- */
-export type Note = { id: string; text: string; ts: number; removed: boolean; seq: number; edited_at?: number };
-export type NoteInput = { text: string; ts: number; removed?: boolean; edit?: boolean };
-
 /** What a device sends for one action. `ts` is never sent: the server stamps it. */
 export type ActionInput = { id: string; at: number; kind: string; target: string; ref?: string | null; data?: unknown };
 /** The answer to an actions sync: every action above the cursor (the device's own, now stamped, included) and the ones refused. */
-export type ActionsSyncResult = { cursor: number; actions: Action[]; more: boolean; rejected: Record<string, { error: string }>; touched: string[] };
+export type ActionsSyncResult = { cursor: number; actions: Action[]; more: boolean; rejected: Record<string, { error: string }>; changed: boolean };
 
 export class ValidationError extends Error {
   constructor(message: string) {
@@ -54,66 +19,26 @@ export class ValidationError extends Error {
 
 export const MAX_TEXT = 200;
 const SKEW_MS = 5 * 60_000; // how far past the server clock an edited time may be before it is refused
-const ID_RE = /^s-[a-z0-9]{4,40}$/;
-const QUEUE_ID_RE = /^q-[a-z0-9]{4,40}$/;
-const NOTE_ID_RE = /^n-[a-z0-9]{4,40}$/;
-
-/** What one sync call returns for one table: rows changed since the cursor, the rows it just wrote, and changes it refused. */
-export type TableSync = { rows: unknown[]; saved: Record<string, unknown>; rejected: Record<string, { error: string }> };
-export type SyncResult = { cursor: number; tables: Record<string, TableSync>; touched: string[] };
-
-/**
- * Every synced table draws its `seq` from ONE counter: the highest `seq` in any of them, plus one. Nothing extra is
- * stored, so a database made before the tables shared a counter opens as it is. To add a table: put it in this list,
- * give it a `seq` column and an index on it, and add an entry to the registry in `openStore`.
- */
-export const SYNCED_TABLES = ["items", "queue", "notes"] as const;
-const NEXT_SEQ = `(SELECT MAX(m) + 1 FROM (${SYNCED_TABLES.map((t) => `SELECT COALESCE(MAX(seq), 0) AS m FROM ${t}`).join(" UNION ALL ")}))`;
 
 export interface Store {
   /** Identifies this database. A client that sees it change knows the server's data was replaced. */
   readonly epoch: string;
-  upsert(id: string, input: ItemInput): Item;
-  since(seq: number): { seq: number; items: Item[] };
-  counts(): { live: number; removed: number };
-  /** Every push, pop and restore the server has seen, oldest first. */
-  log(): LogEvent[];
-  upsertQueue(id: string, input: QueueInput): QueueItem;
-  queueSince(seq: number): { seq: number; items: QueueItem[] };
-  queueCounts(): { queued: number; removed: number };
-  upsertNote(id: string, input: NoteInput): Note;
-  /** The shared counter: the highest `seq` issued to any synced table. */
-  cursor(): number;
   /**
-   * One round trip for every synced table: applies `changes` (table name -> id -> input, each through that table's
-   * own upsert, so validation, events and clamping are exactly those of the single-row calls), then returns every
-   * row whose `seq` is above `cursor`. A change that fails validation is reported in `rejected`, never thrown.
-   * Throws ValidationError only for a malformed request (an unknown table, changes that are not an object).
-   */
-  sync(cursor: number, changes: Record<string, unknown>): SyncResult;
-  /**
-   * The actions wire: stores each action a device sends (stamping `ts`, clamping `at` to it, ignoring an id it already has),
-   * keeps the old row tables in step so the old wire still serves the same data, and returns every action above `cursor`.
+   * The one sync call: stores each action a device sends (stamping `ts`, clamping `at` to it, ignoring an id it already
+   * has) and returns every action above `cursor`.
    */
   syncActions(cursor: number, input: unknown[]): ActionsSyncResult;
   /** The highest `n` in the actions log: the cursor of the actions wire. */
   actionsCursor(): number;
-  /** The append-only log of actions (the source of truth for the new model), oldest first. */
+  /** The append-only log of actions (the source of truth), oldest first. */
   actions(): Action[];
   /** The state the reducer (web/reduce.js) derives from the whole log: items with their intervals, notes, the Later queue. */
   state(): ReturnType<typeof reduce>;
+  /** Items on the stack and items that have ended (deleted ones are not counted), for the metrics. */
+  counts(): { live: number; removed: number };
+  queueCounts(): { queued: number; removed: number };
   close(): void;
 }
-
-type QueueRow = { id: string; text: string; ts: number; at: number; removed: number; started: number; seq: number };
-const toQueueItem = (r: QueueRow): QueueItem => ({ id: r.id, text: r.text, ts: r.ts, at: r.at, removed: r.removed === 1, started: r.started === 1, seq: r.seq });
-
-type NoteRow = { id: string; text: string; ts: number; removed: number; seq: number; edited_at: number | null };
-const toNote = (r: NoteRow): Note => ({ id: r.id, text: r.text, ts: r.ts, removed: r.removed === 1, seq: r.seq, ...(r.edited_at != null ? { edited_at: r.edited_at } : {}) });
-
-type Row = { id: string; text: string; ts: number; at: number | null; removed: number; seq: number; origin: string | null; edited_at: number | null; deleted: number };
-// `origin` is left out when there is none, so rows that were never pushed again look exactly as they always did.
-const toItem = (r: Row): Item => ({ id: r.id, text: r.text, ts: r.ts, at: r.at ?? r.ts, removed: r.removed === 1, seq: r.seq, ...(r.origin ? { origin: r.origin } : {}), ...(r.edited_at != null ? { edited_at: r.edited_at } : {}), ...(r.deleted === 1 ? { deleted: true } : {}) });
 
 export function openStore(path: string, opts: { now?: () => number } = {}): Store {
   const clock = opts.now ?? Date.now;
@@ -174,188 +99,11 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
   }
   const rec = makeRecorder(db);
 
-  const write = db.prepare(
-    `INSERT INTO items (id, text, ts, at, removed, origin, edited_at, deleted, seq)
-     VALUES ($id, $text, $ts, $at, $removed, $origin, NULL, COALESCE($deleted, 0), ${NEXT_SEQ})
-     ON CONFLICT(id) DO UPDATE SET text = $text, ts = $ts, at = $at, removed = $removed,
-       origin = COALESCE(items.origin, $origin),
-       edited_at = COALESCE($editedAt, items.edited_at),
-       deleted = COALESCE($deleted, items.deleted),
-       seq = ${NEXT_SEQ}
-     RETURNING id, text, ts, at, removed, seq, origin, edited_at, deleted`,
-  );
-  const find = db.prepare("SELECT id, text, ts, at, removed, seq, origin, edited_at, deleted FROM items WHERE id = $id");
-  const record = db.prepare(
-    "INSERT INTO events (ts, at, op, id, text, detail) VALUES ($ts, $at, $op, $id, $text, $detail)",
-  );
-  // Every event is also written as the action(s) that record it. The events table stays as it was (dual write).
-  const emit = (op: LogEvent["op"], id: string, text: string, ts: number, at: number, detail: string | null, origin: string | null = null) => {
-    record.run({ $ts: ts, $at: at, $op: op, $id: id, $text: text, $detail: detail });
-    rec.fromEvent(op, id, text, ts, at, detail, { origin, mkId: rec.newId });
-  };
-  const events = db.prepare("SELECT n, ts, at, op, id, text, detail FROM events ORDER BY n ASC");
-  const later = db.prepare("SELECT id, text, ts, at, removed, seq, origin, edited_at, deleted FROM items WHERE seq > $seq ORDER BY seq ASC");
-  const maxSeq = db.prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM items");
-  const tally = db.prepare(
-    "SELECT COALESCE(SUM(removed = 0 AND deleted = 0), 0) AS live, COALESCE(SUM(removed = 1 AND deleted = 0), 0) AS removed FROM items",
-  );
-
-  // The server compares what a device sends with what it holds and logs the difference, so a resend of the
-  // same state adds nothing. A device only sends an item's latest state, so several offline changes between
-  // two syncs show up as the net change. Event times from a device are clamped to the server's clock: a phone
-  // whose clock runs ahead must not get stuck in a sync error or put events in the future.
-  const upsertTx = db.transaction((id: string, inText: string, inTs: number, removed: boolean, at: number | undefined, origin: string | null, edit: boolean, deleted: boolean | null) => {
-    const now = clock();
-    const clamp = (t: number) => Math.max(0, Math.min(t, now)); // never in the future, never before 1970
-    const before = find.get({ $id: id }) as Row | null;
-    // Only a write marked as an edit may change an existing row's text or ts (see ItemInput.edit).
-    const isEdit = edit && before !== null;
-    if (isEdit) {
-      // A phone's clock may run a little ahead, so a few minutes past the server's clock is clamped, not refused.
-      if (inTs > now + SKEW_MS || (at !== undefined && at > now + SKEW_MS)) throw new ValidationError("a time cannot be in the future");
-    }
-    const text = before && !isEdit ? before.text : inText;
-    const ts = before && !isEdit ? before.ts : isEdit ? clamp(inTs) : inTs;
-    // A later write can describe an older state (a retry whose response was lost, a device that was offline).
-    // Whichever arrives last still wins, as before, but its event is never dated earlier than the item's last one,
-    // so the history of one item always reads forwards.
-    const floor = before ? Math.min(before.at ?? before.ts, now) : 0;
-    const after = (t: number) => Math.max(clamp(t), floor);
-    const changes: [LogEvent["op"], number][] = [];
-    let itemAt: number;
-    if (!before) {
-      // A new row is logged as pushed at its own ts, whatever has happened to it since on the device.
-      changes.push(["push", clamp(ts)]);
-      itemAt = clamp(at ?? (removed ? now : ts));
-      if (removed) changes.push(["pop", itemAt]);
-    } else if (before.removed === 0 && removed) {
-      itemAt = after(at ?? now);
-      changes.push(["pop", itemAt]);
-    } else if (before.removed === 1 && !removed) {
-      itemAt = after(at ?? now);
-      changes.push(["restore", itemAt]);
-    } else if (isEdit && removed && at !== undefined) {
-      itemAt = clamp(at); // a deliberate correction of the end time: the floor above is for retried events, not for this
-    } else {
-      itemAt = before.at ?? before.ts;
-    }
-    if (isEdit && removed && itemAt < ts) throw new ValidationError("the end cannot be before the start");
-    const diff: Record<string, { from: unknown; to: unknown }> = {};
-    if (isEdit) {
-      if (before!.text !== text) diff.text = { from: before!.text, to: text };
-      if (before!.ts !== ts) diff.ts = { from: before!.ts, to: ts };
-      if (before!.removed === 1 && removed && (before!.at ?? before!.ts) !== itemAt) diff.at = { from: before!.at ?? before!.ts, to: itemAt };
-    }
-    const edited = Object.keys(diff).length > 0;
-    const saved = toItem(write.get({ $id: id, $text: text, $ts: ts, $at: itemAt, $removed: removed ? 1 : 0, $origin: origin, $editedAt: edited ? now : null, $deleted: deleted === null ? null : deleted ? 1 : 0 }) as Row);
-    for (const [op, when] of changes) emit(op, id, text, now, when, null, op === "push" ? saved.origin ?? null : null);
-    if (edited) emit("edit", id, text, now, now, JSON.stringify(diff));
-    // Deleting and undoing are logged when the flag really changes; the events before them stay as they were.
-    const wasDeleted = before?.deleted === 1;
-    if (!wasDeleted && saved.deleted) emit("delete", id, text, now, now, null);
-    if (wasDeleted && !saved.deleted) emit("undelete", id, text, now, now, null);
-    return saved;
-  });
-
-  const QCOLS = "id, text, ts, at, removed, started, seq";
-  const writeQueue = db.prepare(
-    `INSERT INTO queue (id, text, ts, at, removed, started, seq)
-     VALUES ($id, $text, $ts, $at, $removed, $started, ${NEXT_SEQ})
-     ON CONFLICT(id) DO UPDATE SET text = $text, ts = $ts, at = $at, removed = $removed, started = $started,
-       seq = ${NEXT_SEQ}
-     RETURNING ${QCOLS}`,
-  );
-  const findQueue = db.prepare(`SELECT ${QCOLS} FROM queue WHERE id = $id`);
-  const laterQueue = db.prepare(`SELECT ${QCOLS} FROM queue WHERE seq > $seq ORDER BY seq ASC`);
-  const maxQueueSeq = db.prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM queue");
-  const queueTally = db.prepare(
-    "SELECT COALESCE(SUM(removed = 0), 0) AS queued, COALESCE(SUM(removed = 1), 0) AS removed FROM queue",
-  );
-
-  // Same approach as the stack: events are the difference between the stored row and what arrived, written in the
-  // same transaction. A queue row leaves by being dropped (`dequeue`) or started (`start`); the stack row it
-  // becomes has the id `s-` plus the rest of its id and logs its own `push`, so the two events can be joined.
-  const upsertQueueTx = db.transaction((id: string, text: string, ts: number, removed: boolean, started: boolean, at: number | undefined) => {
-    const now = clock();
-    const clamp = (t: number) => Math.max(0, Math.min(t, now));
-    const before = findQueue.get({ $id: id }) as QueueRow | null;
-    const floor = before ? Math.min(before.at, now) : 0;
-    const after = (t: number) => Math.max(clamp(t), floor);
-    const leave: LogEvent["op"] = started ? "start" : "dequeue";
-    const changes: [LogEvent["op"], number][] = [];
-    let itemAt: number;
-    if (!before) {
-      changes.push(["queue", clamp(ts)]);
-      itemAt = clamp(at ?? (removed ? now : ts));
-      if (removed) changes.push([leave, itemAt]);
-    } else if (before.removed === 0 && removed) {
-      itemAt = after(at ?? now);
-      changes.push([leave, itemAt]);
-    } else if (before.removed === 1 && !removed) {
-      itemAt = after(at ?? now);
-      changes.push(["requeue", itemAt]);
-    } else {
-      itemAt = before.at;
-    }
-    const keepStarted = removed && started;
-    const saved = toQueueItem(
-      writeQueue.get({ $id: id, $text: text, $ts: ts, $at: itemAt, $removed: removed ? 1 : 0, $started: keepStarted ? 1 : 0 }) as QueueRow,
-    );
-    for (const [op, when] of changes) emit(op, id, text, now, when, null);
-    return saved;
-  });
-
-  const NCOLS = "id, text, ts, removed, seq, edited_at";
-  const writeNote = db.prepare(
-    `INSERT INTO notes (id, text, ts, removed, edited_at, seq) VALUES ($id, $text, $ts, $removed, NULL, ${NEXT_SEQ})
-     ON CONFLICT(id) DO UPDATE SET text = $text, ts = $ts, removed = $removed, edited_at = COALESCE($editedAt, notes.edited_at), seq = ${NEXT_SEQ}
-     RETURNING ${NCOLS}`,
-  );
-  const findNote = db.prepare(`SELECT ${NCOLS} FROM notes WHERE id = $id`);
-  const laterNotes = db.prepare(`SELECT ${NCOLS} FROM notes WHERE seq > $seq ORDER BY seq ASC`);
-
-  // A new note logs one `note` event (its text, dated at the note's own time). A deliberate edit logs an `edit` event
-  // with what changed, like an item edit. Removing logs `delete` (and coming back `undelete`). A resend of the same state adds nothing.
-  const upsertNoteTx = db.transaction((id: string, inText: string, inTs: number, removed: boolean, edit: boolean) => {
-    const now = clock();
-    const clamp = (t: number) => Math.max(0, Math.min(t, now));
-    const before = findNote.get({ $id: id }) as NoteRow | null;
-    const isEdit = edit && before !== null;
-    if (isEdit && inTs > now + SKEW_MS) throw new ValidationError("a time cannot be in the future");
-    const text = before && !isEdit ? before.text : inText;
-    const ts = before && !isEdit ? before.ts : clamp(inTs);
-    const diff: Record<string, { from: unknown; to: unknown }> = {};
-    if (isEdit) {
-      if (before!.text !== text) diff.text = { from: before!.text, to: text };
-      if (before!.ts !== ts) diff.ts = { from: before!.ts, to: ts };
-    }
-    const edited = Object.keys(diff).length > 0;
-    const saved = toNote(writeNote.get({ $id: id, $text: text, $ts: ts, $removed: removed ? 1 : 0, $editedAt: edited ? now : null }) as NoteRow);
-    if (!before) emit("note", id, text, now, ts, null);
-    if (edited) emit("edit", id, text, now, now, JSON.stringify(diff));
-    // A removed note is a deleted one: logged as `delete`, and `undelete` when it comes back.
-    if (before && before.removed === 0 && removed) emit("delete", id, text, now, now, null);
-    if (before && before.removed === 1 && !removed) emit("undelete", id, text, now, now, null);
-    return saved;
-  });
-
-  const maxSeqs = db.prepare(`SELECT MAX(m) AS seq FROM (${SYNCED_TABLES.map((t) => `SELECT COALESCE(MAX(seq), 0) AS m FROM ${t}`).join(" UNION ALL ")})`);
-  const cursor = () => (maxSeqs.get() as { seq: number }).seq;
-
-  // One entry per synced table (the names in SYNCED_TABLES): how to write a row and how to read rows above a seq.
-  const registry: Record<(typeof SYNCED_TABLES)[number], { upsert(id: string, input: any): unknown; since(seq: number): unknown[] }> = {
-    notes: { upsert: (id, input) => store.upsertNote(id, input), since: (seq) => (laterNotes.all({ $seq: seq }) as NoteRow[]).map(toNote) },
-    items: { upsert: (id, input) => store.upsert(id, input), since: (seq) => (later.all({ $seq: seq }) as Row[]).map(toItem) },
-    queue: { upsert: (id, input) => store.upsertQueue(id, input), since: (seq) => (laterQueue.all({ $seq: seq }) as QueueRow[]).map(toQueueItem) },
-  };
-  const isObject = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
-
   // ---- the actions wire ----
   const KINDS = new Set(["push", "push-again", "pop", "drop", "edit", "void", "delete", "undelete", "note", "later", "dequeue", "requeue", "start"]);
   const ACTION_ID_RE = /^[A-Za-z0-9_-]{4,64}$/;
   const TARGET_RE = /^[sqn]-[a-z0-9]{4,40}$/;
   const PAGE = 5000; // at most this many actions in one answer; `more` says there are further ones
-  const actionsFor = db.prepare("SELECT n, id, ts, at, kind, target, ref, data, origin FROM actions WHERE target = $t ORDER BY n ASC");
   const actionsAbove = db.prepare("SELECT n, id, ts, at, kind, target, ref, data, origin FROM actions WHERE n > $n ORDER BY n ASC LIMIT $limit");
   const maxN = db.prepare("SELECT COALESCE(MAX(n), 0) AS n FROM actions");
   const hasAction = db.prepare("SELECT 1 AS x FROM actions WHERE id = $id");
@@ -387,147 +135,47 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
     return { id: x.id, at: x.at as number, kind: x.kind, target: x.target, ref: (x.ref as string | null | undefined) ?? null, data: data === null ? null : d };
   }
 
-  // The old row tables follow the actions, so the old wire (and an older build of the app) sees the same data.
-  function projectLegacy(target: string, now: number): string {
-    const acts = (actionsFor.all({ $t: target }) as Parameters<typeof toAction>[0][]).map(toAction);
-    const st = reduce(acts) as any;
-    const edited = acts.some((a) => a.kind === "edit");
-    if (target.startsWith("n-")) {
-      const n = st.notes[target];
-      if (n) writeNote.get({ $id: target, $text: n.text, $ts: n.at, $removed: n.removed ? 1 : 0, $editedAt: edited ? now : null });
-      return "notes";
-    }
-    if (target.startsWith("q-")) {
-      const q = st.queue[target];
-      if (q) writeQueue.get({ $id: target, $text: q.text, $ts: q.at, $at: acts[acts.length - 1].at, $removed: q.removed ? 1 : 0, $started: q.started ? 1 : 0 });
-      return "queue";
-    }
-    const it = st.items[target];
-    if (it) {
-      const last = it.intervals[it.intervals.length - 1];
-      write.get({ $id: target, $text: it.text, $ts: last.start.at, $at: last.end ? last.end.at : last.start.at, $removed: it.live ? 0 : 1, $origin: it.origin ?? null, $editedAt: edited ? now : null, $deleted: it.deleted ? 1 : 0 });
-    }
-    return "items";
-  }
-
   const syncActionsTx = db.transaction((since: number, input: unknown[]): ActionsSyncResult => {
     const now = clock();
     const rejected: Record<string, { error: string }> = {};
-    const targets = new Set<string>();
+    let changed = false;
     for (const raw of input) {
       const rawId = raw && typeof raw === "object" && typeof (raw as { id?: unknown }).id === "string" ? (raw as { id: string }).id : "?";
       try {
         const a = checkAction(raw, now);
         if (hasAction.get({ $id: a.id })) continue; // a resend: already stored
         rec.put(a.id, a.kind, a.target, now, a.at, a.data, a.ref ?? null);
-        targets.add(a.target);
+        changed = true;
       } catch (e) {
         if (!(e instanceof ValidationError)) throw e;
         rejected[rawId] = { error: e.message };
       }
     }
-    const touched = new Set<string>();
-    for (const t of targets) touched.add(projectLegacy(t, now));
     const rows = actionsAbove.all({ $n: since, $limit: PAGE + 1 }) as Parameters<typeof toAction>[0][];
     const more = rows.length > PAGE;
     const actions = rows.slice(0, PAGE).map(toAction);
     const top = more ? actions[actions.length - 1].n : (maxN.get() as { n: number }).n;
-    return { cursor: Math.max(top, since > top ? 0 : top), actions, more, rejected, touched: [...touched] };
+    return { cursor: Math.max(top, since > top ? 0 : top), actions, more, rejected, changed };
   });
+
+  const allActions = () => (db.prepare("SELECT n, id, ts, at, kind, target, ref, data, origin FROM actions ORDER BY n ASC").all() as Parameters<typeof toAction>[0][]).map(toAction);
 
   const store: Store = {
     epoch,
-    cursor,
     syncActions(since, input) {
       if (!Array.isArray(input)) throw new ValidationError("actions must be a list");
       return syncActionsTx.immediate(Number.isSafeInteger(since) && since > 0 ? since : 0, input);
     },
-    sync(since, changes) {
-      if (!isObject(changes)) throw new ValidationError("changes must be an object");
-      for (const [name, rows] of Object.entries(changes)) {
-        if (!(name in registry)) throw new ValidationError(`unknown table: ${name}`);
-        if (!isObject(rows)) throw new ValidationError(`changes for ${name} must be an object`);
-      }
-      const tables: Record<string, TableSync> = {};
-      for (const name of SYNCED_TABLES) {
-        const saved: Record<string, unknown> = {};
-        const rejected: Record<string, { error: string }> = {};
-        for (const [id, input] of Object.entries((changes[name] ?? {}) as Record<string, unknown>)) {
-          try {
-            if (!isObject(input)) throw new ValidationError("a change must be an object");
-            saved[id] = registry[name].upsert(id, input);
-          } catch (e) {
-            if (!(e instanceof ValidationError)) throw e;
-            rejected[id] = { error: e.message };
-          }
-        }
-        tables[name] = { rows: [], saved, rejected };
-      }
-      // Read after every write, so the rows just saved come back too.
-      for (const name of SYNCED_TABLES) tables[name].rows = registry[name].since(since);
-      return { cursor: cursor(), tables, touched: SYNCED_TABLES.filter((n) => Object.keys(tables[n].saved).length > 0) };
-    },
-    upsertNote(id, input) {
-      if (typeof id !== "string" || !NOTE_ID_RE.test(id)) throw new ValidationError("invalid id");
-      const text = typeof input.text === "string" ? input.text.trim() : "";
-      if (!text) throw new ValidationError("text is required");
-      if (text.length > MAX_TEXT) throw new ValidationError(`text is over ${MAX_TEXT} characters`);
-      if (!Number.isSafeInteger(input.ts)) throw new ValidationError("ts must be an integer");
-      return upsertNoteTx.immediate(id, text, input.ts, input.removed === true, input.edit === true);
-    },
-    upsertQueue(id, input) {
-      if (typeof id !== "string" || !QUEUE_ID_RE.test(id)) throw new ValidationError("invalid id");
-      const text = typeof input.text === "string" ? input.text.trim() : "";
-      if (!text) throw new ValidationError("text is required");
-      if (text.length > MAX_TEXT) throw new ValidationError(`text is over ${MAX_TEXT} characters`);
-      if (!Number.isSafeInteger(input.ts)) throw new ValidationError("ts must be an integer");
-      const at = input.at ?? undefined;
-      if (at !== undefined && !Number.isSafeInteger(at)) throw new ValidationError("at must be an integer");
-      if (input.started !== undefined && typeof input.started !== "boolean") throw new ValidationError("started must be a boolean");
-      return upsertQueueTx.immediate(id, text, input.ts, input.removed === true, input.started === true, at);
-    },
-    queueSince(seq) {
-      const items = (laterQueue.all({ $seq: seq }) as QueueRow[]).map(toQueueItem);
-      return { seq: (maxQueueSeq.get() as { seq: number }).seq, items };
+    actionsCursor: () => (maxN.get() as { n: number }).n,
+    actions: allActions,
+    state: () => reduce(allActions()),
+    counts() {
+      const items = Object.values((store.state() as any).items) as { live: boolean; deleted: boolean }[];
+      return { live: items.filter((i) => i.live && !i.deleted).length, removed: items.filter((i) => !i.live && !i.deleted).length };
     },
     queueCounts() {
-      return queueTally.get() as { queued: number; removed: number };
-    },
-    upsert(id, input) {
-      if (typeof id !== "string" || !ID_RE.test(id)) throw new ValidationError("invalid id");
-      const text = typeof input.text === "string" ? input.text.trim() : "";
-      if (!text) throw new ValidationError("text is required");
-      if (text.length > MAX_TEXT) throw new ValidationError(`text is over ${MAX_TEXT} characters`);
-      if (!Number.isSafeInteger(input.ts)) throw new ValidationError("ts must be an integer");
-      const at = input.at ?? undefined;
-      if (at !== undefined && !Number.isSafeInteger(at)) throw new ValidationError("at must be an integer");
-      const origin = input.origin ?? null;
-      if (origin !== null && (typeof origin !== "string" || !ID_RE.test(origin) || origin === id)) throw new ValidationError("origin must be the id of another item");
-      if (input.deleted !== undefined && input.deleted !== null && typeof input.deleted !== "boolean") throw new ValidationError("deleted must be a boolean");
-      return upsertTx.immediate(id, text, input.ts, input.removed === true, at, origin, input.edit === true, typeof input.deleted === "boolean" ? input.deleted : null);
-    },
-    since(seq) {
-      const items = (later.all({ $seq: seq }) as Row[]).map(toItem);
-      return { seq: (maxSeq.get() as { seq: number }).seq, items };
-    },
-    counts() {
-      return tally.get() as { live: number; removed: number };
-    },
-    log() {
-      // `detail` exists only on edit events; leaving it off the rest keeps them looking as they always did.
-      return (events.all() as (LogEvent & { detail: string | null })[]).map((e) => {
-        if (e.detail === null) delete (e as { detail?: unknown }).detail;
-        return e as LogEvent;
-      });
-    },
-    actionsCursor() {
-      return (maxN.get() as { n: number }).n;
-    },
-    actions() {
-      return (db.prepare("SELECT n, id, ts, at, kind, target, ref, data, origin FROM actions ORDER BY n ASC").all() as Parameters<typeof toAction>[0][]).map(toAction);
-    },
-    state() {
-      return reduce(store.actions());
+      const rows = Object.values((store.state() as any).queue) as { removed: boolean }[];
+      return { queued: rows.filter((r) => !r.removed).length, removed: rows.filter((r) => r.removed).length };
     },
     close() {
       db.close();

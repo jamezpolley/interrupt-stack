@@ -1,5 +1,5 @@
 import { resolve, sep, extname } from "node:path";
-import { ValidationError, type Store } from "./store";
+import type { Store } from "./store";
 import { webVersion } from "./webversion";
 import { reportedBase } from "./gitver";
 import type { UpdateState } from "./updatecheck";
@@ -52,10 +52,8 @@ export function createApp(
 
   // Route labels come from a fixed set so a scanner hitting random paths cannot grow the metric series.
   function routeLabel(pathname: string): string {
-    if (pathname === "/healthz" || pathname === "/login" || pathname === "/metrics" || pathname === "/api/events" || pathname === "/api/items" || pathname === "/api/queue" || pathname === "/api/sync" || pathname === "/api/state" || pathname === "/api/day" || pathname === "/api/version" || pathname === "/api/update-check" || pathname === "/api/update") return pathname;
+    if (pathname === "/healthz" || pathname === "/login" || pathname === "/metrics" || pathname === "/api/events" || pathname === "/api/sync" || pathname === "/api/state" || pathname === "/api/day" || pathname === "/api/version" || pathname === "/api/update-check" || pathname === "/api/update") return pathname;
     if (/^\/api\/items\/[^/]+\/history$/.test(pathname)) return "/api/items/:id/history";
-    if (/^\/api\/items\/[^/]+$/.test(pathname)) return "/api/items/:id";
-    if (/^\/api\/queue\/[^/]+$/.test(pathname)) return "/api/queue/:id";
     return pathname.startsWith("/api/") ? "/api/other" : "static";
   }
 
@@ -71,9 +69,9 @@ export function createApp(
       "# TYPE interrupt_stack_queue_items gauge",
       `interrupt_stack_queue_items{state="queued"} ${queue.queued}`,
       `interrupt_stack_queue_items{state="removed"} ${queue.removed}`,
-      "# HELP interrupt_stack_seq Highest change sequence number issued.",
+      "# HELP interrupt_stack_seq Highest action number in the log.",
       "# TYPE interrupt_stack_seq gauge",
-      `interrupt_stack_seq ${store.cursor()}`,
+      `interrupt_stack_seq ${store.actionsCursor()}`,
       "# HELP interrupt_stack_event_streams Open server-sent event streams.",
       "# TYPE interrupt_stack_event_streams gauge",
       `interrupt_stack_event_streams ${streams.size}`,
@@ -90,7 +88,6 @@ export function createApp(
     return lines.join("\n") + "\n";
   }
 
-  const currentSeq = () => store.since(Number.MAX_SAFE_INTEGER).seq;
   const send = (chunk: Uint8Array) => {
     for (const c of streams) {
       try {
@@ -100,17 +97,13 @@ export function createApp(
       }
     }
   };
-  // `sync` is the one event the current client listens to: the shared counter. `seq` (stack) and `qseq` (queue) are
-  // kept for already-cached clients, which sync each table separately, and go out only for the tables that changed.
-  const syncEvent = () => `event: sync\ndata: ${store.cursor()}\n\n`;
-  const openingEvent = () => enc.encode(`event: seq\ndata: ${currentSeq()}\n\n${syncEvent()}`);
+  // The one stream event is `sync`: the log's counter moved, so run a sync.
+  const syncEvent = () => `event: sync\ndata: ${store.actionsCursor()}\n\n`;
+  const openingEvent = () => enc.encode(syncEvent());
 
-  function notify(tables: readonly string[] = ["items"]) {
+  function notify() {
     if (!streams.size) return;
-    const parts = [];
-    if (tables.includes("items")) parts.push(`event: seq\ndata: ${currentSeq()}\n\n`);
-    if (tables.includes("queue")) parts.push(`event: qseq\ndata: ${store.queueSince(Number.MAX_SAFE_INTEGER).seq}\n\n`);
-    send(enc.encode(parts.join("") + syncEvent()));
+    send(enc.encode(syncEvent()));
   }
 
   function events(): Response {
@@ -155,20 +148,6 @@ export function createApp(
     return { data };
   }
 
-  async function putQueue(id: string, req: Request): Promise<Response> {
-    const body = await readBody(req);
-    if ("error" in body) return body.error;
-    const { data } = body;
-    try {
-      const row = store.upsertQueue(id, { text: data.text, ts: data.ts, removed: data.removed === true, at: data.at, started: data.started });
-      notify(["queue"]);
-      return json(row);
-    } catch (e) {
-      if (e instanceof ValidationError) return json({ error: e.message }, 400);
-      throw e;
-    }
-  }
-
   // Current state and a day's activity, derived from the actions log. Days are the client's: `from` and `to` (ms, [from, to)),
   // so the server needs no time zone. `/api/state` adds the stack and the Later pile; both give the stays that ended in the
   // window, the notes in it, and the other stays that overlap (needed for time on top). One stay is one row.
@@ -208,47 +187,20 @@ export function createApp(
     return json({ id: target, epoch: store.epoch, actions });
   }
 
-  // The one sync call: apply this device's pending changes to every table, answer with everything above its cursor.
+  // The one sync call: a device sends the actions it has not sent and gets back every action above its cursor.
   async function postSync(req: Request): Promise<Response> {
     const body = await readBody(req, MAX_SYNC_BODY);
     if ("error" in body) return body.error;
     const { data } = body;
-    // The actions wire: a device sends its journal's unsent actions and gets back every action above its cursor.
-    if (Array.isArray(data.actions)) {
-      if (data.actions.length > MAX_SYNC_CHANGES) return json({ error: "too many changes" }, 413);
-      const since = Number.isSafeInteger(data.cursor) && data.cursor > 0 ? data.cursor : 0;
-      const { touched, ...result } = store.syncActions(since, data.actions);
-      if (touched.length) notify(touched);
-      return json({ epoch: store.epoch, ...result });
+    if (!Array.isArray(data.actions)) {
+      // A copy of the app cached from before the actions log sends rows. It has to be reloaded.
+      return json({ error: "this copy of the app is out of date: reload it" }, 400);
     }
-    const changes = data.changes ?? {};
-    if (Array.isArray(data) || changes === null || typeof changes !== "object" || Array.isArray(changes)) return json({ error: "changes must be an object" }, 400);
-    let count = 0;
-    for (const rows of Object.values(changes)) if (rows !== null && typeof rows === "object") count += Object.keys(rows).length;
-    if (count > MAX_SYNC_CHANGES) return json({ error: "too many changes" }, 413);
-    const cursor = Number.isSafeInteger(data.cursor) && data.cursor > 0 ? data.cursor : 0;
-    try {
-      const { touched, ...result } = store.sync(cursor, changes);
-      if (touched.length) notify(touched);
-      return json({ epoch: store.epoch, ...result });
-    } catch (e) {
-      if (e instanceof ValidationError) return json({ error: e.message }, 400);
-      throw e;
-    }
-  }
-
-  async function putItem(id: string, req: Request): Promise<Response> {
-    const body = await readBody(req);
-    if ("error" in body) return body.error;
-    const { data } = body;
-    try {
-      const item = store.upsert(id, { text: data.text, ts: data.ts, removed: data.removed === true, at: data.at, origin: data.origin, edit: data.edit === true, deleted: data.deleted });
-      notify(["items"]);
-      return json(item);
-    } catch (e) {
-      if (e instanceof ValidationError) return json({ error: e.message }, 400);
-      throw e;
-    }
+    if (data.actions.length > MAX_SYNC_CHANGES) return json({ error: "too many changes" }, 413);
+    const since = Number.isSafeInteger(data.cursor) && data.cursor > 0 ? data.cursor : 0;
+    const { changed, ...result } = store.syncActions(since, data.actions);
+    if (changed) notify();
+    return json({ epoch: store.epoch, ...result });
   }
 
   async function serveStatic(pathname: string): Promise<Response> {
@@ -290,16 +242,6 @@ export function createApp(
     const hm = pathname.match(/^\/api\/items\/([^/]+)\/history$/);
     if (hm && req.method === "GET") return history(decodeURIComponent(hm[1]));
     if (pathname === "/api/sync" && req.method === "POST") return postSync(req);
-    if (pathname === "/api/items" && req.method === "GET") {
-      const n = Number(url.searchParams.get("since"));
-      return json({ ...store.since(Number.isSafeInteger(n) && n > 0 ? n : 0), epoch: store.epoch });
-    }
-    if (pathname === "/api/queue" && req.method === "GET") {
-      const n = Number(url.searchParams.get("since"));
-      return json({ ...store.queueSince(Number.isSafeInteger(n) && n > 0 ? n : 0), epoch: store.epoch });
-    }
-    const qm = pathname.match(/^\/api\/queue\/([^/]+)$/);
-    if (qm && req.method === "PUT") return putQueue(decodeURIComponent(qm[1]), req);
     if (pathname === "/api/version" && req.method === "GET") {
       return new Response(JSON.stringify({
           version,
@@ -337,8 +279,6 @@ export function createApp(
       }
       return json({ restarting: true }, 202);
     }
-    const m = pathname.match(/^\/api\/items\/([^/]+)$/);
-    if (m && req.method === "PUT") return putItem(decodeURIComponent(m[1]), req);
     if (pathname.startsWith("/api/")) return json({ error: "not found" }, 404);
     if (req.method === "GET" || req.method === "HEAD") return serveStatic(pathname);
     return new Response("not found", { status: 404 });
