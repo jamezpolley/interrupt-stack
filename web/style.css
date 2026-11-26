@@ -179,8 +179,10 @@ dialog.details[open]{display:block}
 .details-box{padding:14px;display:flex;flex-direction:column;gap:10px;max-height:calc(100dvh - 32px - 2px)}
 .details-summary{margin:0;font-size:.875rem;color:var(--muted)}
 .details-scroll{overflow:auto;min-height:0}
-.details-foot{display:flex}
-.details-foot button{flex:1 1 auto}
+/* The buttons along the bottom of a details card are small and sit to the right (Delete stays on the left); Close, the default, is the bigger one at the top. */
+.details-foot{display:flex;gap:8px;align-items:center;justify-content:flex-end}
+.details-foot button{flex:0 0 auto}
+.details .debug-actions button{min-height:40px;padding:6px 20px;font-size:.9375rem}
 .details h2{overflow-wrap:anywhere;min-width:0}
 table.timeline{border-collapse:collapse;width:100%;font-size:.8125rem}
 .timeline th{font-family:var(--font-mono);font-size:.6875rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:400;text-align:left;padding:0 6px 6px;position:sticky;top:0;background:var(--surface)}
@@ -226,7 +228,7 @@ a.tl:hover,a.tl:focus-visible{text-decoration-color:var(--accent)}
 .timeline .daybtn{flex:1;min-width:0;min-height:0;height:1.6rem;padding:0;font-size:.65rem;line-height:1;white-space:nowrap}
 .timeline .daybtn:disabled{opacity:.4}
 input.title-edit{font:inherit;font-weight:600;font-size:1rem;width:100%;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px 10px}
-.details-foot button{min-height:44px}
+.details-foot button{min-height:36px;padding:4px 14px;font-size:.875rem}
 .edited-tag{font-size:.6875rem;font-style:italic;color:var(--muted);opacity:.85}
 .details .debug-head h2{flex:1 1 0}
 

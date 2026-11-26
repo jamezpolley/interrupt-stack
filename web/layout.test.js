@@ -20,4 +20,13 @@ describe("page layout", () => {
     expect(html).toMatch(/<button type="button" id="details-again">/);
     expect(html).toMatch(/id="details-close" autofocus/);
   });
+  test("the buttons along the bottom of the details card are compact and do not stretch; Close is the bigger one", () => {
+    const css = readFileSync(new URL("./style.css", import.meta.url), "utf8");
+    expect(css).toMatch(/\.details-foot button\{flex:0 0 auto\}/);
+    expect(css).not.toMatch(/\.details-foot button\{flex:1 1 auto\}/);
+    const foot = Number(css.match(/\.details-foot button\{min-height:(\d+)px/)[1]);
+    const close = Number(css.match(/\.details \.debug-actions button\{min-height:(\d+)px/)[1]);
+    expect(foot).toBeLessThanOrEqual(36);
+    expect(close).toBeGreaterThan(foot);
+  });
 });
