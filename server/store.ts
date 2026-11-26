@@ -40,6 +40,11 @@ export type QueueInput = { text: string; ts: number; removed: boolean; started?:
 export type Note = { id: string; text: string; ts: number; removed: boolean; seq: number; edited_at?: number };
 export type NoteInput = { text: string; ts: number; removed?: boolean; edit?: boolean };
 
+/** What a device sends for one action. `ts` is never sent: the server stamps it. */
+export type ActionInput = { id: string; at: number; kind: string; target: string; ref?: string | null; data?: unknown };
+/** The answer to an actions sync: every action above the cursor (the device's own, now stamped, included) and the ones refused. */
+export type ActionsSyncResult = { cursor: number; actions: Action[]; more: boolean; rejected: Record<string, { error: string }>; touched: string[] };
+
 export class ValidationError extends Error {
   constructor(message: string) {
     super(message);
@@ -86,6 +91,11 @@ export interface Store {
    * Throws ValidationError only for a malformed request (an unknown table, changes that are not an object).
    */
   sync(cursor: number, changes: Record<string, unknown>): SyncResult;
+  /**
+   * The actions wire: stores each action a device sends (stamping `ts`, clamping `at` to it, ignoring an id it already has),
+   * keeps the old row tables in step so the old wire still serves the same data, and returns every action above `cursor`.
+   */
+  syncActions(cursor: number, input: unknown[]): ActionsSyncResult;
   /** The append-only log of actions (the source of truth for the new model), oldest first. */
   actions(): Action[];
   /** The state the reducer (web/reduce.js) derives from the whole log: items with their intervals, notes, the Later queue. */
@@ -338,9 +348,98 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
   };
   const isObject = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 
+  // ---- the actions wire ----
+  const KINDS = new Set(["push", "push-again", "pop", "drop", "edit", "void", "delete", "undelete", "note", "later", "dequeue", "requeue", "start"]);
+  const ACTION_ID_RE = /^[A-Za-z0-9_-]{4,64}$/;
+  const TARGET_RE = /^[sqn]-[a-z0-9]{4,40}$/;
+  const PAGE = 5000; // at most this many actions in one answer; `more` says there are further ones
+  const actionsFor = db.prepare("SELECT n, id, ts, at, kind, target, ref, data, origin FROM actions WHERE target = $t ORDER BY n ASC");
+  const actionsAbove = db.prepare("SELECT n, id, ts, at, kind, target, ref, data, origin FROM actions WHERE n > $n ORDER BY n ASC LIMIT $limit");
+  const maxN = db.prepare("SELECT COALESCE(MAX(n), 0) AS n FROM actions");
+  const hasAction = db.prepare("SELECT 1 AS x FROM actions WHERE id = $id");
+
+  function checkAction(a: unknown, now: number): ActionInput {
+    if (a === null || typeof a !== "object" || Array.isArray(a)) throw new ValidationError("an action must be an object");
+    const x = a as Record<string, unknown>;
+    if (typeof x.id !== "string" || !ACTION_ID_RE.test(x.id)) throw new ValidationError("invalid action id");
+    if (typeof x.kind !== "string" || !KINDS.has(x.kind)) throw new ValidationError("unknown kind");
+    if (typeof x.target !== "string" || !TARGET_RE.test(x.target)) throw new ValidationError("invalid target");
+    if (!Number.isSafeInteger(x.at)) throw new ValidationError("at must be an integer");
+    if (x.ref !== undefined && x.ref !== null && (typeof x.ref !== "string" || !ACTION_ID_RE.test(x.ref))) throw new ValidationError("invalid ref");
+    const data = x.data === undefined || x.data === null ? null : x.data;
+    if (data !== null && (typeof data !== "object" || Array.isArray(data))) throw new ValidationError("data must be an object");
+    const d = (data ?? {}) as Record<string, unknown>;
+    const needsText = x.kind === "push" || x.kind === "later" || x.kind === "note";
+    if (needsText || (x.kind === "edit" && "text" in d)) {
+      const t = typeof d.text === "string" ? d.text.trim() : "";
+      if (!t) throw new ValidationError("text is required");
+      if (t.length > MAX_TEXT) throw new ValidationError(`text is over ${MAX_TEXT} characters`);
+      d.text = t;
+    }
+    if (x.kind === "edit" && "at" in d && (!Number.isSafeInteger(d.at) || (d.at as number) < 0)) throw new ValidationError("that time is not valid");
+    if (x.kind === "edit" && typeof d.at === "number" && d.at > now + SKEW_MS) throw new ValidationError("a time cannot be in the future");
+    if (x.kind === "edit" && !("text" in d) && !("at" in d)) throw new ValidationError("an edit must change the text or a time");
+    if (x.kind === "edit" && "at" in d && x.ref == null) throw new ValidationError("a time edit must point at an action");
+    if (typeof d.at === "number") d.at = Math.min(d.at, now);
+    if (x.target.startsWith("s-") && x.kind === "later") throw new ValidationError("wrong kind for this target");
+    return { id: x.id, at: x.at as number, kind: x.kind, target: x.target, ref: (x.ref as string | null | undefined) ?? null, data: data === null ? null : d };
+  }
+
+  // The old row tables follow the actions, so the old wire (and an older build of the app) sees the same data.
+  function projectLegacy(target: string, now: number): string {
+    const acts = (actionsFor.all({ $t: target }) as Parameters<typeof toAction>[0][]).map(toAction);
+    const st = reduce(acts) as any;
+    const edited = acts.some((a) => a.kind === "edit");
+    if (target.startsWith("n-")) {
+      const n = st.notes[target];
+      if (n) writeNote.get({ $id: target, $text: n.text, $ts: n.at, $removed: n.removed ? 1 : 0, $editedAt: edited ? now : null });
+      return "notes";
+    }
+    if (target.startsWith("q-")) {
+      const q = st.queue[target];
+      if (q) writeQueue.get({ $id: target, $text: q.text, $ts: q.at, $at: acts[acts.length - 1].at, $removed: q.removed ? 1 : 0, $started: q.started ? 1 : 0 });
+      return "queue";
+    }
+    const it = st.items[target];
+    if (it) {
+      const last = it.intervals[it.intervals.length - 1];
+      write.get({ $id: target, $text: it.text, $ts: last.start.at, $at: last.end ? last.end.at : last.start.at, $removed: it.live ? 0 : 1, $origin: it.origin ?? null, $editedAt: edited ? now : null, $deleted: it.deleted ? 1 : 0 });
+    }
+    return "items";
+  }
+
+  const syncActionsTx = db.transaction((since: number, input: unknown[]): ActionsSyncResult => {
+    const now = clock();
+    const rejected: Record<string, { error: string }> = {};
+    const targets = new Set<string>();
+    for (const raw of input) {
+      const rawId = raw && typeof raw === "object" && typeof (raw as { id?: unknown }).id === "string" ? (raw as { id: string }).id : "?";
+      try {
+        const a = checkAction(raw, now);
+        if (hasAction.get({ $id: a.id })) continue; // a resend: already stored
+        rec.put(a.id, a.kind, a.target, now, a.at, a.data, a.ref ?? null);
+        targets.add(a.target);
+      } catch (e) {
+        if (!(e instanceof ValidationError)) throw e;
+        rejected[rawId] = { error: e.message };
+      }
+    }
+    const touched = new Set<string>();
+    for (const t of targets) touched.add(projectLegacy(t, now));
+    const rows = actionsAbove.all({ $n: since, $limit: PAGE + 1 }) as Parameters<typeof toAction>[0][];
+    const more = rows.length > PAGE;
+    const actions = rows.slice(0, PAGE).map(toAction);
+    const top = more ? actions[actions.length - 1].n : (maxN.get() as { n: number }).n;
+    return { cursor: Math.max(top, since > top ? 0 : top), actions, more, rejected, touched: [...touched] };
+  });
+
   const store: Store = {
     epoch,
     cursor,
+    syncActions(since, input) {
+      if (!Array.isArray(input)) throw new ValidationError("actions must be a list");
+      return syncActionsTx.immediate(Number.isSafeInteger(since) && since > 0 ? since : 0, input);
+    },
     sync(since, changes) {
       if (!isObject(changes)) throw new ValidationError("changes must be an object");
       for (const [name, rows] of Object.entries(changes)) {

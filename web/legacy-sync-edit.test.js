@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "../server/app";
 import { openStore } from "../server/store";
-import { createSync } from "./sync.js";
+import { createSync } from "./legacy-sync.js";
 
 const cleanup = [];
 afterEach(() => {

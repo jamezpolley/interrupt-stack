@@ -235,6 +235,24 @@ step 4); `events` is still written alongside the actions; and the reducer's stat
 rather than kept in projection tables (nothing reads it until step 3's endpoints). The next steps are 2 (client journal
 and wire v2) and 3 (read endpoints).
 
+### Step 2: status
+
+Built on this branch: the actions wire on `POST /api/sync` (a device sends its unsent actions and gets back every action
+above its cursor, the server stamping `ts`, clamping `at`, ignoring ids it already has, and keeping the old row tables in
+step so the old wire serves the same data); the client journal (`web/journal.js`: every action the device made or
+received, with a pending list, in IndexedDB `interrupt-stack-journal`); and the stack, Later queue and notes
+(`web/sync.js`, `queue.js`, `notes.js`) as views over the reducer's state (`web/rows.js`). A device that had unsent changes
+sends them once over the old wire before it moves over (`web/upgrade.js`); the static version imports its rows as actions.
+The old client sync is kept as `web/legacy-*.js`, for that one flush only.
+
+What the app now does, per your decisions: each stay on the stack is one Done today entry (a row per stay), opening any
+shows all the stays; Push again adds a stay to the same item; undo is a void; Drop flags a buried item, which is popped by
+itself when it reaches the top (the pop's id comes from the drop's, so two devices make one); a correction is an action that
+points at the one it corrects, so what was first reported stays in the log.
+
+Still to do: retire the old wire and tables (step 4), and the read endpoints (step 3). `events` is still written for old-wire
+writes only; the actions wire does not write it.
+
 ### Steps (each a PR, stacked)
 
 1. **Reducer and log, server side.** `actions` table, shared `reduce.js`, projections, rebuild function, numbered

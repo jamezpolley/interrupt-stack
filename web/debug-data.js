@@ -22,8 +22,19 @@ export async function readStorage(storage) {
   }
 }
 
+/** Reads the journal's storage into `{ actions, meta }`, or `{ error }` when it cannot be read. */
+export async function readJournal(storage) {
+  if (typeof storage?.load !== "function") return { error: "no storage" };
+  try {
+    const { actions, cursor, epoch } = await storage.load();
+    return { actions, meta: { cursor, epoch } };
+  } catch (e) {
+    return { error: String(e?.message ?? e) };
+  }
+}
+
 /**
- * `db` is `{ stack, queue, notes }`, each from `readStorage`. `version` is the version label the app shows, `mode` is
+ * `db` is `{ journal, stack, queue, notes }` (the last three are the old row databases, empty once a device has moved over), each from `readStorage`. `version` is the version label the app shows, `mode` is
  * "server" or "static", and `lastFailure` (optional) is the raw detail of the latest failed sync call.
  */
 export function buildDebugData({ now, offsetMinutes = new Date(now).getTimezoneOffset(), version, mode, db, lastFailure }) {
@@ -31,7 +42,7 @@ export function buildDebugData({ now, offsetMinutes = new Date(now).getTimezoneO
     generated: localIso(now, offsetMinutes),
     version,
     mode,
-    db: { stack: db.stack, queue: db.queue, notes: db.notes },
+    db: { ...db },
     ...(lastFailure ? { lastFailure } : {}),
   };
 }

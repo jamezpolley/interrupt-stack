@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "../server/app";
 import { openStore } from "../server/store";
-import { createSync } from "./sync.js";
-import { createNotes } from "./notes.js";
+import { createSync } from "./legacy-sync.js";
+import { createNotes } from "./legacy-notes.js";
 import { completedToday } from "./today.js";
 import { timeOnTop, timeline } from "./times.js";
-import { pushAgain } from "./again.js";
+import { pushAgain } from "./legacy-again.js";
 
 const cleanup = [];
 afterEach(() => {

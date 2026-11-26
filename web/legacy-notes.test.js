@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "../server/app";
 import { openStore } from "../server/store";
-import { createSync } from "./sync.js";
-import { createQueue } from "./queue.js";
-import { createNotes } from "./notes.js";
+import { createSync } from "./legacy-sync.js";
+import { createQueue } from "./legacy-queue.js";
+import { createNotes } from "./legacy-notes.js";
 import { doneTodayEntries } from "./today.js";
 import { doneRow, timeline, timeOnTop } from "./times.js";
 

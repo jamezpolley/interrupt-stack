@@ -172,6 +172,14 @@ export function createApp(
     const body = await readBody(req, MAX_SYNC_BODY);
     if ("error" in body) return body.error;
     const { data } = body;
+    // The actions wire: a device sends its journal's unsent actions and gets back every action above its cursor.
+    if (Array.isArray(data.actions)) {
+      if (data.actions.length > MAX_SYNC_CHANGES) return json({ error: "too many changes" }, 413);
+      const since = Number.isSafeInteger(data.cursor) && data.cursor > 0 ? data.cursor : 0;
+      const { touched, ...result } = store.syncActions(since, data.actions);
+      if (touched.length) notify(touched);
+      return json({ epoch: store.epoch, ...result });
+    }
     const changes = data.changes ?? {};
     if (Array.isArray(data) || changes === null || typeof changes !== "object" || Array.isArray(changes)) return json({ error: "changes must be an object" }, 400);
     let count = 0;

@@ -40,6 +40,7 @@ describe("reduce: items", () => {
   test("drop only flags the item; it stays on the stack until popped", () => {
     const s = reduce([push("s-a", 100), act("drop", "s-a", 150)]);
     expect(s.items["s-a"]).toMatchObject({ dropped: true, live: true });
+    expect(s.items["s-a"].dropAction).toEqual(expect.any(String));
   });
 
   test("an edit of an action's time changes the effective time and the original action is untouched", () => {
@@ -104,7 +105,7 @@ describe("reduce: items", () => {
 describe("reduce: notes and the Later queue", () => {
   test("a note, its text edit and its removal", () => {
     const s = reduce([act("note", "n-a", 100, { data: { text: "hello" } }), act("edit", "n-a", 110, { data: { text: "hi" } }), act("delete", "n-a", 120)]);
-    expect(s.notes["n-a"]).toEqual({ id: "n-a", text: "hi", at: 100, ts: 100, removed: true });
+    expect(s.notes["n-a"]).toMatchObject({ id: "n-a", text: "hi", at: 100, ts: 100, removed: true });
   });
 
   test("a note's time can be edited through an action that points at it", () => {

@@ -55,7 +55,7 @@ const project = {
       } else if (a.kind === "pop") {
         const iv = item.raw[item.raw.length - 1];
         if (!iv.end) iv.end = a;
-      } else if (a.kind === "drop") item.dropped = true;
+      } else if (a.kind === "drop") ((item.dropped = true), (item.dropAction = a.id));
       else if (a.kind === "edit" && !a.ref && typeof a.data?.text === "string") item.text = a.data.text;
       else if (a.kind === "delete") item.deleted = true;
       else if (a.kind === "undelete") item.deleted = false;
@@ -84,7 +84,7 @@ const project = {
     }
     if (!note) return null;
     const { _a, ...rest } = note;
-    return { ...rest, at: eff(_a) };
+    return { ...rest, at: eff(_a), action: _a.id };
   },
 
   queue(id, acts) {

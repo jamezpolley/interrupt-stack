@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "../server/app";
 import { openStore } from "../server/store";
-import { createHub } from "./core.js";
-import { createSync } from "./sync.js";
-import { createQueue, stackIdFor } from "./queue.js";
+import { createHub } from "./legacy-core.js";
+import { createSync } from "./legacy-sync.js";
+import { createQueue, stackIdFor } from "./legacy-queue.js";
 
 const cleanup = [];
 afterEach(() => {

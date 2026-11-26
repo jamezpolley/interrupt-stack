@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createSync } from "./sync.js";
+import { createSync } from "./legacy-sync.js";
 
 function memStorage() {
   let dirty = [];

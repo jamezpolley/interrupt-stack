@@ -1,5 +1,6 @@
 import { createSync } from "./sync.js";
-import { NOTES_DB_NAME, openStorage, QUEUE_DB_NAME } from "./idb.js";
+import { NOTES_DB_NAME, openJournalStorage, openStorage, QUEUE_DB_NAME } from "./idb.js";
+import { upgradeFromRows } from "./upgrade.js";
 import { createQueue, QUEUE_LABEL } from "./queue.js";
 import { createNotes, MAX_TEXT as NOTE_MAX } from "./notes.js";
 import { currentPane, pillFor } from "./pane.js";
@@ -8,11 +9,10 @@ import { canUpdateNow, describeServerUpdate, forceRefresh, readVersionInfo, requ
 import { doneTodayEntries } from "./today.js";
 import { describeRow, doneRow, formatClock, formatStart, timelineOrBasic, totalText, wasEdited } from "./times.js";
 import { applyDraft, changesFrom, clockText, dateText, parseEdited, canShiftLater, noteDayShift, shiftRowTime, rowTargets, isOwnRow, sideEffectText, sideEffects, validateDraft } from "./edit.js";
-import { pushAgain } from "./again.js";
 import { displayText, renderLinked } from "./links.js";
 import { reconcileList } from "./reconcile.js";
 import { formatFailure } from "./debug-text.js";
-import { buildDebugData, readStorage } from "./debug-data.js";
+import { buildDebugData, readJournal, readStorage } from "./debug-data.js";
 import { offersSignIn, shortStatus, statusLabel, statusMessage, unsentWords } from "./status-text.js";
 import { LOCAL_ONLY } from "./config.js";
 import { versionLine } from "./version-line.js";
@@ -139,7 +139,7 @@ function stackRowCreate() {
   x.type = "button";
   x.className = "drop";
   x.textContent = "Drop";
-  x.addEventListener("click", () => removeItem(li._item));
+  x.addEventListener("click", () => dropItem(li._item));
   const del = document.createElement("button");
   del.type = "button";
   del.className = "drop";
@@ -161,6 +161,8 @@ function stackRowUpdate(li, { it, depth }) {
     li._text = it.text;
   }
   setText(ag, formatStart(it.ts, Date.now()));
+  li.classList.toggle("dropped", !!it.dropped);
+  x.disabled = !!it.dropped; // already flagged: it goes by itself when it reaches the top
 }
 
 function queueRowCreate() {
@@ -510,6 +512,11 @@ function renderDetails() {
   const edited = wasEdited(origX, base) ? " · edited" : "";
   $("details-summary").textContent = `Started ${formatStart(t.start, now)} · Ended ${t.end == null ? "\u2014" : formatClock(t.end)}${edited}`;
 
+  // Every stay of this item, when it has more than one (it was pushed again): opening any of them shows the whole history.
+  const stays = base.filter((r) => r.itemId === x.itemId && !r.deleted);
+  $("details-stays").hidden = stays.length < 2;
+  $("details-stays").textContent = stays.length < 2 ? "" : `All stays: ${stays.map((r) => `${formatClock(r.ts)} \u2013 ${r.removed ? formatClock(r.at) : "now"}`).join(" \u00b7 ")}`;
+
   const body = $("details-rows");
   body.textContent = "";
   const targets = rowTargets(x, src);
@@ -635,6 +642,12 @@ async function removeItem(it) {
   offerUndo(it);
 }
 
+// Drop: the top item is popped; a buried one is flagged, stays where it is, and is popped by itself when it reaches the top.
+async function dropItem(it) {
+  await sync.drop(it.id);
+  offerUndo(it);
+}
+
 // Delete: the entry is hidden everywhere as if it never existed (a stack item, a finished entry or a note). Undo brings it back.
 async function deleteItem(it) {
   await sync.delete(it.id);
@@ -746,29 +759,32 @@ async function init() {
   setUpInstall();
   let storage;
   try {
-    storage = await openStorage();
+    storage = await openJournalStorage();
   } catch {
     showNote("This browser would not open local storage, so the stack cannot be kept. Try a normal (non-private) window.");
     return;
   }
-  // The queue has its own database, so a failure there never takes the stack down with it.
-  let queueStorage = {};
-  try {
-    queueStorage = await openStorage(QUEUE_DB_NAME);
-  } catch {}
-  let notesStorage = {};
-  try {
-    notesStorage = await openStorage(NOTES_DB_NAME);
-  } catch {}
-  // A start can be interrupted between its two parts; whenever either side changes, finish any that were.
+  // The three old row databases are only read once, to move a device over (upgrade.js), and by the Debug panel.
+  const oldOpen = async (name) => {
+    try {
+      return await openStorage(name);
+    } catch {
+      return {};
+    }
+  };
+  const old = { stack: await oldOpen(), queue: await oldOpen(QUEUE_DB_NAME), notes: await oldOpen(NOTES_DB_NAME) };
+  // Whenever anything changes, redraw; a Later row whose start was interrupted is finished by the queue.
   const changed = () => {
     render();
     queue?.reconcile().catch(() => {});
   };
-  storages = { stack: storage, queue: queueStorage, notes: notesStorage };
+  storages = { journal: storage, stack: old.stack, queue: old.queue, notes: old.notes };
   sync = createSync({ storage, fetch: (p, i) => fetch(p, i), onChange: changed, onStatus: updateStatus, online: () => navigator.onLine, local: LOCAL_ONLY });
-  queue = createQueue({ storage: queueStorage, stack: sync, onChange: changed, local: LOCAL_ONLY }); // joins the stack's sync channel
-  notes = createNotes({ storage: notesStorage, stack: sync, onChange: changed, local: LOCAL_ONLY }); // joins it too
+  queue = createQueue({ stack: sync, onChange: changed }); // views over the same journal
+  notes = createNotes({ stack: sync, onChange: changed });
+  try {
+    await upgradeFromRows({ old, meta: storage, journal: sync.journal, fetch: (p, i) => fetch(p, i), online: () => navigator.onLine, local: LOCAL_ONLY });
+  } catch {}
   labelQueue();
   render();
 
@@ -883,12 +899,12 @@ async function init() {
   // Copy data: every local database as one JSON document. If the clipboard is refused, the JSON is shown to copy by hand.
   let copiedTimer = null;
   $("debug-copy-data").addEventListener("click", async () => {
-    const [stack, queueDb, notesDb] = await Promise.all([readStorage(storages.stack), readStorage(storages.queue), readStorage(storages.notes)]);
+    const [journal, stack, queueDb, notesDb] = await Promise.all([readJournal(storages.journal), readStorage(storages.stack), readStorage(storages.queue), readStorage(storages.notes)]);
     const doc = buildDebugData({
       now: Date.now(),
       version: $("version").textContent,
       mode: LOCAL_ONLY ? "static" : "server",
-      db: { stack, queue: queueDb, notes: notesDb },
+      db: { journal, stack, queue: queueDb, notes: notesDb },
       lastFailure: sync.lastFailure(),
     });
     const json = JSON.stringify(doc, null, 2);
@@ -918,11 +934,11 @@ async function init() {
   $("details-edit").addEventListener("click", startEdit);
   $("details-cancel").addEventListener("click", endEdit);
   $("details-save").addEventListener("click", saveEdit);
-  // Push again: a new stack item with the same text (linked to this one), then the panel closes on the new top item.
+  // Push again: a new stay of the same item (the earlier ones are kept), then the panel closes.
   $("details-again").addEventListener("click", async () => {
     const id = detailsFor_id;
     if (!id) return;
-    const pushed = await pushAgain(sync, id);
+    const pushed = await sync.pushAgain(id);
     if (pushed) $("details-dialog").close();
   });
   // A click on the backdrop lands on the dialog element itself (its content sits in an inner box that fills it).

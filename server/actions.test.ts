@@ -224,3 +224,64 @@ describe("old behaviour is unchanged", () => {
     expect(s.log().map((e) => e.op)).toEqual(["push"]);
   });
 });
+
+describe("the actions wire (syncActions)", () => {
+  const act = (id: string, kind: string, target: string, at: number, extra: Record<string, unknown> = {}) => ({ id, kind, target, at, ...extra });
+
+  test("stores what a device sends, stamps ts, clamps at, and answers with every action above the cursor", () => {
+    const s = mem(() => 5000);
+    const r = s.syncActions(0, [act("a-one1", "push", "s-aaaa", 4000, { data: { text: "write" } }), act("a-two2", "pop", "s-aaaa", 9000)]);
+    expect(r.rejected).toEqual({});
+    expect(r.actions.map((a) => [a.id, a.ts, a.at])).toEqual([["a-one1", 5000, 4000], ["a-two2", 5000, 5000]]); // the second at was ahead of the server
+    expect(r.cursor).toBe(2);
+    expect(r.more).toBe(false);
+    expect(s.syncActions(2, []).actions).toEqual([]);
+  });
+
+  test("a resend of the same ids changes nothing", () => {
+    const s = mem(() => 5000);
+    const batch = [act("a-one1", "push", "s-aaaa", 4000, { data: { text: "write" } })];
+    s.syncActions(0, batch);
+    const again = s.syncActions(0, batch);
+    expect(again.actions).toHaveLength(1);
+    expect(s.actions()).toHaveLength(1);
+  });
+
+  test("the old row tables follow, so the old wire sees the same data", () => {
+    let t = 5000;
+    const s = mem(() => t);
+    s.syncActions(0, [act("a-one1", "push", "s-aaaa", 4000, { data: { text: "write" } })]);
+    expect(s.since(0).items).toMatchObject([{ id: "s-aaaa", text: "write", ts: 4000, removed: false }]);
+    t = 6000;
+    s.syncActions(0, [act("a-two2", "pop", "s-aaaa", 5500)]);
+    expect(s.since(0).items[0]).toMatchObject({ removed: true, at: 5500 });
+    s.syncActions(0, [act("a-vo13", "void", "s-aaaa", 5800, { ref: "a-two2" })]); // the undo
+    expect(s.since(0).items[0]).toMatchObject({ removed: false });
+    s.syncActions(0, [act("a-del4", "delete", "s-aaaa", 5900)]);
+    expect(s.since(0).items[0]).toMatchObject({ deleted: true });
+    s.syncActions(0, [act("a-nt15", "note", "n-aaaa", 5000, { data: { text: "hi" } }), act("a-lt16", "later", "q-aaaa", 5000, { data: { text: "someday" } })]);
+    expect(s.upsertNote("n-aaaa", { text: "hi", ts: 5000 })).toMatchObject({ text: "hi", removed: false });
+    expect(s.queueSince(0).items[0]).toMatchObject({ id: "q-aaaa", removed: false });
+  });
+
+  test("edits point at the action they correct, and the original stays", () => {
+    const s = mem(() => 9000);
+    s.syncActions(0, [act("a-one1", "push", "s-aaaa", 1000, { data: { text: "x" } }), act("a-two2", "pop", "s-aaaa", 2000), act("a-ed13", "edit", "s-aaaa", 8000, { ref: "a-two2", data: { at: 2500 } })]);
+    expect(s.since(0).items[0]).toMatchObject({ ts: 1000, at: 2500, removed: true });
+    expect(s.actions().find((a) => a.id === "a-two2")!.at).toBe(2000);
+  });
+
+  test("a malformed action is refused by id and the rest of the batch still lands", () => {
+    const s = mem(() => 5000);
+    const r = s.syncActions(0, [act("a-bad1", "wobble", "s-aaaa", 1), act("a-bad2", "push", "s-aaaa", 1, { data: { text: "" } }), act("a-ok13", "push", "s-bbbb", 1, { data: { text: "fine" } }), act("a-bad4", "edit", "s-bbbb", 1, { data: { at: 99999999 }, ref: "a-ok13" })]);
+    expect(Object.keys(r.rejected).sort()).toEqual(["a-bad1", "a-bad2", "a-bad4"]);
+    expect(r.actions.map((a) => a.id)).toEqual(["a-ok13"]);
+  });
+
+  test("every device gets the others' actions back, in order", () => {
+    const s = mem(() => 5000);
+    s.syncActions(0, [act("a-dev11", "push", "s-aaaa", 1000, { data: { text: "from one" } })]);
+    const two = s.syncActions(0, [act("a-dev21", "push", "s-bbbb", 1100, { data: { text: "from two" } })]);
+    expect(two.actions.map((a) => a.id)).toEqual(["a-dev11", "a-dev21"]);
+  });
+});

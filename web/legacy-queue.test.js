@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "../server/app";
 import { openStore } from "../server/store";
-import { createSync } from "./sync.js";
-import { createQueue, stackIdFor } from "./queue.js";
+import { createSync } from "./legacy-sync.js";
+import { createQueue, stackIdFor } from "./legacy-queue.js";
 import { completedToday } from "./today.js";
 
 const cleanup = [];
