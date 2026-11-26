@@ -27,7 +27,7 @@ repurposes both for pop. Each of these follows from that.
 
 | # | Weakness | Where |
 |---|----------|-------|
-| W1 | **The end time shares a field with "last change".** A pop writes `items.at`; an undo overwrites it. A pop time has no field of its own, and an undone pop leaves no trace in `items`. | `store.ts` upsertTx, `at` branches; `sync.js` `remove`/`push-again` |
+| W1 | **The end time shares a field with "last change".** A pop writes `items.at`; an undo overwrites it. A pop time has no field of its own, and an undone pop leaves no trace in `items`. | `store.ts` upsertTx, `at` branches; `sync.js` `remove`/`restore` |
 | W2 | **The push time can be rewritten** by any write marked `edit: true`, with no record in the row of what it was. | `store.ts` line 166 and the check on line 190 |
 | W3 | **No immutable server-received time per action.** The server's receipt time exists only in `events.ts`, which nothing reads. Once `ts` or `at` is edited the row cannot say when the server first saw the push or the pop. | `events` table |
 | W4 | **`at < ts` is representable and gets stored.** A new row keeps its device `ts` unclamped while its `at` is clamped to the server clock, so a device whose clock runs a little fast stores an item that "ended" before it began. The derivation then returns null. | `store.ts` lines 166 vs 177; queue line 250; `times.js` `derive` |
@@ -97,7 +97,7 @@ automatic pop has an id derived from the drop action's id, so two devices that b
 - *Push again* = a `push-again` action. The pop did happen; the item is pushed again. The item now has two intervals, and
   both keep their original times. Time on top sums the intervals, so W5 goes away.
 
-The current app's button (called "push again" in the code and events) has only ever behaved as undo: that is decision 5.
+The current app's button (called "restore" in the code and events) has only ever behaved as undo: that is decision 5.
 
 ### Projections
 
@@ -205,7 +205,7 @@ each in one transaction. Adding a library would not remove the real work, which 
 | `items` row | `push` (`at` = `items.ts`; `ts` = the first `push` event's `ts`, else `items.ts`, with `data.synth` marking a guess) |
 | removed item | `pop` (or `drop` where the event log says so) with `at` = `items.at`; rows with NULL `at` get `at = ts` |
 | `events` `edit` | `edit` actions (`ts` = event `ts`) |
-| `events` `push-again` after a `pop` | a `void` of that pop (that is what the current button does; decision 5) |
+| `events` `restore` after a `pop` | a `void` of that pop (that is what the current button does; decision 5) |
 | deleted flag / events | `delete` / `undelete` |
 | `notes` | `note` (+ `edit`/`delete`) |
 | queue rows | `later`, `start`, `dequeue`, `requeue` |
@@ -243,7 +243,7 @@ for one release (cost: a second write path). This is a decision (6 below).
   projection for a new device (the cursor then syncs incrementally).
 - `GET /api/day?from=&to=` returns what happened in that window, including pushed-but-not-ended items.
 - `GET /api/items/:id/history` returns that item's actions oldest first: for answering "what happened to this
-  item". The owner declined an `events` read endpoint earlier; this one is narrow and debug-only (decision 7).
+  item". The owner declined an `events` read endpoint earlier; this one is narrow and debug-only (section 9).
 - `GET /api/days` (per-day summary, needs a time zone) is left until a screen needs it.
 
 ## 6. ORM / query layer
@@ -256,7 +256,7 @@ per table. Revisit if the query count grows several-fold.
 ## 7. Tests and risks
 
 Tests: a fixture database in today's exact schema with real-shaped rows (NULL `at`, pre-event-log items, `at < ts`
-rows, pop, push again, pop items, edited and deleted items, queue starts, notes) converted and checked against section 4's
+rows, pop-restore-pop items, edited and deleted items, queue starts, notes) converted and checked against section 4's
 table, and converted again to prove it idempotent; a rebuild-equals-incremental property test; random action
 sequences from two devices with clocks skewed by up to 5 s, resends and late arrivals, asserting the invariants
 (`ts` monotonic in `n`, `at <= ts`, no interval with effective end before start, every action id applied once); the
