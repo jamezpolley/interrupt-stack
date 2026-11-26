@@ -276,26 +276,29 @@ same reducer fixtures run in Bun and in the browser module; old-client wire test
 
 Settled by the owner (review of 2026-11-26):
 
-1. **Edits are actions; the original times are never overwritten.** Agreed. `ts` and the first-reported `at` stay in the
-   log; the effective time is the latest edit.
+1. **Edits are actions; the original times are never overwritten.** `ts` and the first-reported `at` stay in the log;
+   the effective time is the latest edit.
 2. **Push again is a new interval on the same item.** One item, several intervals; the second and later `push-again`
-   actions each start a new interval. (Not a major change to the model: an item already has an arbitrary list of
-   actions.)
+   actions each start a new interval.
 3. **Done list: one entry per interval**, and opening any interval shows the full history (all intervals) of the item.
 4. **Pop and drop are different kinds, with a new meaning for drop.** Pop is the only way out of the stack and only
    applies to the item on top. Drop flags a buried item; when it reaches the top it is popped automatically
    (section 2, Kinds).
 5. **The current button stays an undo (void of the pop).** "Restore" is retired as a word; the other operation is
    called "push again".
-7. **Debug and read endpoints (step 3).** Not a question; stands as written.
-9. **`events` after migration:** frozen, read-only. Not a question; stands as written.
-10. **No ORM; numbered migrations with plain `bun:sqlite`.** Not a question; stands as written.
-11. **Order of work:** the four steps in section 4 as stacked PRs, step 1 first. Not a question; stands as written.
+6. **Falling back to older code after migration:** accept the stale view in fallback mode. The older code reads the
+   old tables, which stop changing at the migration; the migration first copies the database to
+   `stack.db.pre-actions`. No second write path.
+7. **Void rules:** the server accepts a `void` of any action; the screen only offers undo for the latest pop. The
+   voided action and the void both stay in the log.
 
-6. **Falling back to older code after migration:** accept the stale view in fallback mode (recommended, accepted).
-   The older code reads the old tables, which stop changing at the migration; the migration first copies the
-   database to `stack.db.pre-actions`. No second write path.
-8. **Void rules:** the server accepts a `void` of any action; the screen only offers undo for the latest pop
-   (recommended, accepted). The voided action and the void both stay in the log.
+Section 3 (detailed time semantics) is still to be reviewed by the owner.
 
-All eleven decisions are settled. Section 3 (detailed time semantics) is still to be reviewed by the owner.
+## 9. Engineering choices (not for the owner to decide)
+
+These are how the work will be done; they are here so the plan is complete. Sections 4 to 6 give the detail.
+
+- The read endpoints (`/api/state`, `/api/day`, `/api/items/:id/history`) are built in step 3, after the model.
+- `events` is frozen and read-only after the migration.
+- No ORM; numbered migrations with plain `bun:sqlite`.
+- The work is the four steps of section 4 as stacked PRs, step 1 first.
