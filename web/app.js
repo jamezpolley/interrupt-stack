@@ -7,7 +7,7 @@ import { createEventStream } from "./events.js";
 import { canUpdateNow, describeServerUpdate, forceRefresh, readVersionInfo, requestServerCheck, updateServerNow } from "./refresh.js";
 import { doneTodayEntries } from "./today.js";
 import { describeRow, doneRow, formatClock, formatStart, timelineOrBasic, totalText, wasEdited } from "./times.js";
-import { applyDraft, changesFrom, clockText, dateText, parseEdited, canShiftLater, noteDayShift, shiftRowTime, rowTargets, sideEffectText, sideEffects, validateDraft } from "./edit.js";
+import { applyDraft, changesFrom, clockText, dateText, parseEdited, canShiftLater, noteDayShift, shiftRowTime, rowTargets, isOwnRow, sideEffectText, sideEffects, validateDraft } from "./edit.js";
 import { pushAgain } from "./again.js";
 import { displayText, renderLinked } from "./links.js";
 import { reconcileList } from "./reconcile.js";
@@ -488,6 +488,7 @@ function renderDetails() {
 
   $("details-edit").hidden = $("details-again").hidden = $("details-delete").hidden = !!ed;
   $("details-save").hidden = $("details-cancel").hidden = !ed;
+  $("details-close").classList.toggle("primary", !ed); // Close is the default until editing starts, then Save is
 
   // The heading shows the text as people read it (links clickable). The edit box holds the raw stored text.
   const title = $("details-title");
@@ -520,7 +521,7 @@ function renderDetails() {
     const tr = document.createElement("tr");
     const tdT = document.createElement("td");
     tdT.className = "t";
-    if (ed && owner?.removed) {
+    if (ed && owner?.removed && isOwnRow(x, tg)) {
       const orig = owner[tg.field];
       const clock = document.createElement("input");
       clock.className = "clock";

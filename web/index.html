@@ -84,7 +84,7 @@
     <div class="details-box">
       <div class="debug-head">
         <h2 id="details-title"></h2>
-        <span class="debug-actions"><button type="button" id="details-close">Close</button></span>
+        <span class="debug-actions"><button type="button" class="primary" id="details-close" autofocus>Close</button></span>
       </div>
       <p class="details-summary" id="details-summary"></p>
       <p class="edit-problems" id="details-problems" role="alert" hidden></p>
@@ -97,7 +97,7 @@
       </div>
       <div class="details-foot">
         <button type="button" id="details-edit">Edit</button>
-        <button type="button" class="primary" id="details-again">Push again</button>
+        <button type="button" id="details-again">Push again</button>
         <button type="button" id="details-delete">Delete</button>
         <button type="button" id="details-cancel" hidden>Cancel</button>
         <button type="button" class="primary" id="details-save" hidden>Save</button>
@@ -124,22 +124,21 @@
     <p class="quiet-note" id="debug-copy-msg" role="status" hidden></p>
   </dialog>
 
-  <div class="toast" id="toast" hidden>
-    <span id="toast-text"></span>
-    <button type="button" id="undo-btn">Undo</button>
-  </div>
-
   <div class="board" id="board">
     <section class="pane" id="pane-stack" aria-label="Stack">
       <form id="push-form" autocomplete="off">
         <input type="text" id="push-input" maxlength="200" placeholder="What are you starting now?" aria-label="New task to push onto the stack">
         <span class="split">
           <button type="submit" class="primary" id="push-btn">Push</button>
-          <button type="button" id="swap-btn" title="Push this, and pop the current task" aria-label="Push this, and pop the current task" disabled>&amp; Pop</button>
+          <button type="button" id="swap-btn" title="Push this, and pop the current task" aria-label="Push this, and pop the current task" disabled>Swap</button>
         </span>
       </form>
 
       <section id="now-wrap" aria-live="polite"></section>
+      <div class="toast" id="toast" hidden>
+        <span id="toast-text"></span>
+        <button type="button" id="undo-btn">Undo</button>
+      </div>
       <section class="under" id="under-wrap" hidden>
         <ol id="under" aria-label="Underneath the current task"></ol>
       </section>

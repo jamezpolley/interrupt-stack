@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { applyDraft, changesFrom, parseEdited, shiftDate, shiftRowTime, canShiftLater, noteDayShift, rowTargets, sideEffects, validateDraft, clockText, dateText } from "./edit.js";
+import { applyDraft, changesFrom, parseEdited, shiftDate, shiftRowTime, canShiftLater, noteDayShift, rowTargets, isOwnRow, sideEffects, validateDraft, clockText, dateText } from "./edit.js";
 
 const m = (h, min = 0) => new Date(2026, 10, 19, h, min).getTime();
 const item = (id, ts, at, removed = true, text = id) => ({ id, text, ts, at, removed, seq: 1 });
@@ -17,6 +17,13 @@ describe("rowTargets", () => {
       { id: "B", field: "at" },
       { id: "A", field: "at" },
     ]);
+  });
+});
+
+describe("isOwnRow", () => {
+  test("only the rows that belong to the item being viewed are editable", () => {
+    const tg = rowTargets(A, all);
+    expect(tg.map((t) => isOwnRow(A, t))).toEqual([true, false, false, true]);
   });
 });
 
