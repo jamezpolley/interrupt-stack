@@ -493,6 +493,7 @@ function renderDetails() {
   $("details-edit").hidden = $("details-delete").hidden = !!ed;
   $("details-again").hidden = !!ed || !x.removed; // pushing again only makes sense for something that has ended
   $("details-save").hidden = $("details-cancel").hidden = !ed;
+  $("details-dialog").classList.toggle("editing", !!ed); // editing: the table gets room for the names, the totals scroll off to the right
   $("details-close").classList.toggle("primary", !ed); // Close is the default until editing starts, then Save is
 
   // The heading shows the text as people read it (links clickable). The edit box holds the raw stored text.

@@ -29,4 +29,12 @@ describe("page layout", () => {
     expect(foot).toBeLessThanOrEqual(36);
     expect(close).toBeGreaterThan(foot);
   });
+  test("while editing, the details table keeps a width where the names can be read and scrolls sideways", () => {
+    const css = readFileSync(new URL("./style.css", import.meta.url), "utf8");
+    const app = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+    expect(css).toMatch(/\.details\.editing table\.timeline\{min-width:\d+rem\}/);
+    expect(css).toMatch(/\.details\.editing \.timeline \.w\{min-width:\d+rem\}/);
+    expect(css).toMatch(/\.details-scroll\{overflow:auto/);
+    expect(app).toMatch(/classList\.toggle\("editing", !!ed\)/);
+  });
 });
