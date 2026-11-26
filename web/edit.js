@@ -20,6 +20,9 @@ export function rowTargets(x, all) {
   });
 }
 
+/** Editing an item changes only its own push and end times: a "Paused" or "Back on top" row belongs to another item. */
+export const isOwnRow = (x, tg) => tg.id === x.id;
+
 /** `draft` = { texts: {id: string}, times: {"id:field": ms} }. Returns copies of the items with the draft applied. */
 export function applyDraft(all, draft) {
   return all.map((i) => {
