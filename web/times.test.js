@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { doneRow, formatClock, formatDuration, formatStart, timeline, timeOnTop, detailsFor, wasEdited, describeRow, timelineOrBasic } from "./times.js";
+import { doneRow, formatClock, formatDuration, formatStart, timeline, timeOnTop, detailsFor, wasEdited, describeRow, timelineOrBasic, liveTimeline, detailsTimeline } from "./times.js";
 
 const MIN = 60000;
 // Items are (id, ts, at, removed). Times are minutes from a base so the arithmetic is easy to read.
@@ -539,5 +539,22 @@ describe("an entry that has no derived timeline can still be opened", () => {
   test("an entry with no end time: the summary says the end is unknown", () => {
     const old = { id: "o", text: "o", ts: D, removed: true };
     expect(detailsFor(old, [old], NOWD, "en-US").summary).toBe("Started 10:40 \u00b7 Ended \u2014");
+  });
+});
+
+describe("liveTimeline and detailsTimeline", () => {
+  const live = { id: "s-a", text: "x", ts: 1000, at: 1000, removed: false, seq: 1 };
+  test("an item on the stack gets a one-row timeline with no end and no totals", () => {
+    expect(liveTimeline(live)).toEqual({ start: 1000, end: null, onTop: null, wall: null, rows: [{ t: 1000, kind: "pushed", onTop: null, wall: null }], live: true });
+  });
+  test("a finished item has no live timeline, and detailsTimeline gives it its own", () => {
+    const done = { id: "s-b", text: "y", ts: 1000, at: 2000, removed: true, seq: 2 };
+    expect(liveTimeline(done)).toBeNull();
+    expect(detailsTimeline(done, [done]).rows.map((r) => r.kind)).toEqual(["pushed", "popped"]);
+  });
+  test("detailsTimeline opens a live item and nothing without a push time", () => {
+    expect(detailsTimeline(live, [live]).live).toBe(true);
+    expect(detailsTimeline({ ...live, ts: NaN }, [])).toBeNull();
+    expect(detailsTimeline(undefined, [])).toBeNull();
   });
 });

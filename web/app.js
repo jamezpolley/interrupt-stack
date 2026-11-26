@@ -7,7 +7,7 @@ import { currentPane, pillFor } from "./pane.js";
 import { createEventStream } from "./events.js";
 import { canUpdateNow, describeServerUpdate, forceRefresh, readVersionInfo, requestServerCheck, updateServerNow } from "./refresh.js";
 import { doneTodayEntries } from "./today.js";
-import { describeRow, doneRow, formatClock, formatStart, timelineOrBasic, totalText, wasEdited } from "./times.js";
+import { describeRow, doneRow, formatClock, formatStart, detailsTimeline, timelineOrBasic, totalText, wasEdited } from "./times.js";
 import { applyDraft, changesFrom, clockText, dateText, parseEdited, canShiftLater, noteDayShift, shiftRowTime, rowTargets, isOwnRow, sideEffectText, sideEffects, validateDraft } from "./edit.js";
 import { displayText, renderLinked } from "./links.js";
 import { reconcileList } from "./reconcile.js";
@@ -98,8 +98,9 @@ const nowCard = (() => {
   const del = document.createElement("button");
   del.type = "button";
   del.className = "drop";
-  del.textContent = "Delete";
-  del.addEventListener("click", () => card._item && deleteItem(card._item));
+  del.textContent = "Details";
+  del.setAttribute("aria-haspopup", "dialog");
+  del.addEventListener("click", () => card._item && openDetails(card._item.id));
   const acts = document.createElement("span");
   acts.className = "now-actions";
   acts.append(del, pop);
@@ -119,7 +120,7 @@ function updateNowCard(top) {
   const { t, age, del } = nowCard._parts;
   if (nowCard._text !== top.text) {
     renderLinked(t, top.text);
-    del.setAttribute("aria-label", `Delete ${displayText(top.text)}, as if it was never pushed`);
+    del.setAttribute("aria-label", `Details of ${displayText(top.text)}`);
     nowCard._text = top.text;
   }
   setText(age, `Pushed ${formatStart(top.ts, Date.now())}`);
@@ -143,8 +144,9 @@ function stackRowCreate() {
   const del = document.createElement("button");
   del.type = "button";
   del.className = "drop";
-  del.textContent = "Delete";
-  del.addEventListener("click", () => deleteItem(li._item));
+  del.textContent = "Details";
+  del.setAttribute("aria-haspopup", "dialog");
+  del.addEventListener("click", () => openDetails(li._item.id));
   li.append(d, tx, ag, x, del);
   li._parts = { d, tx, ag, x, del };
   return li;
@@ -157,7 +159,7 @@ function stackRowUpdate(li, { it, depth }) {
   if (li._text !== it.text) {
     renderLinked(tx, it.text);
     x.setAttribute("aria-label", `Drop ${displayText(it.text)} from the stack`);
-    del.setAttribute("aria-label", `Delete ${displayText(it.text)}, as if it was never pushed`);
+    del.setAttribute("aria-label", `Details of ${displayText(it.text)}`);
     li._text = it.text;
   }
   setText(ag, formatStart(it.ts, Date.now()));
@@ -454,7 +456,7 @@ let ed = null; // {draft: {texts, times}} while editing: only what was changed, 
 function openDetails(id) {
   const all = sync.allItems();
   const item = all.find((i) => i.id === id);
-  if (!item || !timelineOrBasic(item, all)) return;
+  if (!item || !detailsTimeline(item, all)) return;
   detailsFor_id = id;
   ed = null;
   renderDetails();
@@ -477,18 +479,19 @@ function renderDetails() {
   const origX = base.find((i) => i.id === detailsFor_id);
   if (!origX) return $("details-dialog").close();
   let x = all.find((i) => i.id === detailsFor_id);
-  let t = timelineOrBasic(x, all);
+  let t = detailsTimeline(x, all);
   let src = all;
   // A draft that makes no valid history (the problem text says why) must not blank the table, or it could not be fixed.
   if (!t) {
     src = base;
     x = origX;
-    t = timelineOrBasic(x, base);
+    t = detailsTimeline(x, base);
   }
   if (!t) return $("details-dialog").close();
   const now = Date.now();
 
-  $("details-edit").hidden = $("details-again").hidden = $("details-delete").hidden = !!ed;
+  $("details-edit").hidden = $("details-delete").hidden = !!ed;
+  $("details-again").hidden = !!ed || !x.removed; // pushing again only makes sense for something that has ended
   $("details-save").hidden = $("details-cancel").hidden = !ed;
   $("details-close").classList.toggle("primary", !ed); // Close is the default until editing starts, then Save is
 
@@ -510,7 +513,7 @@ function renderDetails() {
   } else renderLinked(title, x.text);
 
   const edited = wasEdited(origX, base) ? " · edited" : "";
-  $("details-summary").textContent = `Started ${formatStart(t.start, now)} · Ended ${t.end == null ? "\u2014" : formatClock(t.end)}${edited}`;
+  $("details-summary").textContent = `Started ${formatStart(t.start, now)} · ${t.end == null ? "Still on the stack" : `Ended ${formatClock(t.end)}`}${edited}`;
 
   // Every stay of this item, when it has more than one (it was pushed again): opening any of them shows the whole history.
   const stays = base.filter((r) => r.itemId === x.itemId && !r.deleted);
@@ -600,7 +603,7 @@ function refreshChecks(liveNumbers = false) {
   const problems = validateDraft(base, ed.draft, Date.now());
   const all = applyDraft(base, ed.draft);
   const x = all.find((i) => i.id === detailsFor_id);
-  const t = x && timelineOrBasic(x, all);
+  const t = x && detailsTimeline(x, all);
   if (!t && !problems.length) problems.push("Those times do not make a valid history.");
   const p = $("details-problems");
   p.hidden = !problems.length;
@@ -612,7 +615,7 @@ function refreshChecks(liveNumbers = false) {
   $("details-save").disabled = problems.length > 0 || changesFrom(base, ed.draft).length === 0;
   if (liveNumbers && t) {
     const edited = wasEdited(base.find((i) => i.id === detailsFor_id), base) ? " · edited" : "";
-    $("details-summary").textContent = `Started ${formatStart(t.start, Date.now())} · Ended ${t.end == null ? "\u2014" : formatClock(t.end)}${edited}`;
+    $("details-summary").textContent = `Started ${formatStart(t.start, Date.now())} · ${t.end == null ? "Still on the stack" : `Ended ${formatClock(t.end)}`}${edited}`;
     const rows = $("details-rows").children;
     if (rows.length === t.rows.length) t.rows.forEach((r, i) => ((rows[i].children[2].textContent = totalText(r.onTop)), (rows[i].children[3].textContent = totalText(r.wall))));
   }

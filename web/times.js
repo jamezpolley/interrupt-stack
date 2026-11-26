@@ -94,6 +94,20 @@ export function timelineOrBasic(x, items) {
   return { start: x.ts, end: ok(x.at) ? x.at : null, onTop: null, wall: null, rows, basic: true };
 }
 
+/**
+ * What the details card shows for an item that is still on the stack: when it was pushed, and nothing else yet (it has
+ * no end, so there are no totals and nothing about it can be corrected except its title). Null if it is not live.
+ */
+export function liveTimeline(x) {
+  if (!x || x.removed || !ok(x.ts)) return null;
+  return { start: x.ts, end: null, onTop: null, wall: null, rows: [{ t: x.ts, kind: "pushed", onTop: null, wall: null }], live: true };
+}
+
+/** The timeline for any entry the details card can open: finished (with totals, or basic) or still on the stack. */
+export function detailsTimeline(x, items) {
+  return timelineOrBasic(x, items) ?? liveTimeline(x);
+}
+
 /** "<1 min", "12 min", "1 h 5 min", "2 h", "1 d 2 h". Empty for anything that is not a duration. */
 export function formatDuration(ms) {
   if (!ok(ms) || ms < 0) return "";

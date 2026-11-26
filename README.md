@@ -145,7 +145,7 @@ A short text entry (not empty, up to 200 characters) that never touches the stac
 
 ## Deleting an entry
 
-A **Delete** button removes an entry as if it had never existed: on the Working-on card and on each row underneath (next to Pop/Drop), and in the details of a finished entry and of a note. The usual 15 second Undo toast follows; there is no confirm. A deleted item is not on the stack, not in Done today, not in anyone's timeline or time on top (an item pushed above another and then deleted adds nothing to it), and not counted in depth or the `live` metric. Later rows keep their own Drop.
+A **Delete** button removes an entry as if it had never existed. It lives in the details card: of a finished entry, of a note, and of an item still on the stack (the **Details** button on the Working-on card and on each row underneath opens it; there it shows when the item was pushed, lets you change its title, and offers Delete, but its times cannot be changed while it is on the stack and there is no Push again). The usual 15 second Undo toast follows; there is no confirm. A deleted item is not on the stack, not in Done today, not in anyone's timeline or time on top (an item pushed above another and then deleted adds nothing to it), and not counted in depth or the `live` metric. Later rows keep their own Drop.
 
 - **Items** are deleted by a `delete` action and brought back by an `undelete`. Nothing is erased: both stay in the log, and `GET /api/items/<id>/history` shows them.
 - **Notes** the same way.
