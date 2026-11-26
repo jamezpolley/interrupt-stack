@@ -1,4 +1,9 @@
 import { Database } from "bun:sqlite";
+import { copyFileSync, existsSync } from "node:fs";
+import { reduce } from "../web/reduce.js";
+import { CREATE_ACTIONS, convertLegacy, makeRecorder, toAction, type Action } from "./actions";
+
+export type { Action };
 
 /** `at` is the device's clock when the item last changed state (equal to `ts` for a fresh push). */
 export type Item = { id: string; text: string; ts: number; at: number; removed: boolean; seq: number; origin?: string; edited_at?: number; deleted?: boolean };
@@ -81,6 +86,10 @@ export interface Store {
    * Throws ValidationError only for a malformed request (an unknown table, changes that are not an object).
    */
   sync(cursor: number, changes: Record<string, unknown>): SyncResult;
+  /** The append-only log of actions (the source of truth for the new model), oldest first. */
+  actions(): Action[];
+  /** The state the reducer (web/reduce.js) derives from the whole log: items with their intervals, notes, the Later queue. */
+  state(): ReturnType<typeof reduce>;
   close(): void;
 }
 
@@ -127,6 +136,32 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
   const epoch = savedEpoch?.value ?? crypto.randomUUID();
   if (!savedEpoch) db.prepare("INSERT INTO meta (key, value) VALUES ('epoch', ?)").run(epoch);
 
+  // Numbered migrations, recorded in PRAGMA user_version. Everything above is the original guarded schema; each step
+  // below runs once, in one transaction, and is only ever added to the end of the list.
+  const MIGRATIONS: ((d: Database) => void)[] = [
+    // 1: the actions log, with the existing rows and events converted into it
+    (d) => {
+      for (const q of CREATE_ACTIONS) d.run(q);
+      convertLegacy(d);
+    },
+  ];
+  const version = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+  if (version < MIGRATIONS.length) {
+    // A real database is copied once before its first conversion, so there is always a way back.
+    const hasData = (db.prepare("SELECT COUNT(*) AS c FROM items").get() as { c: number }).c > 0;
+    if (version === 0 && path !== ":memory:" && hasData && !existsSync(`${path}.pre-actions`)) {
+      db.run("PRAGMA wal_checkpoint(TRUNCATE)");
+      copyFileSync(path, `${path}.pre-actions`);
+    }
+    for (let v = version; v < MIGRATIONS.length; v++) {
+      db.transaction(() => {
+        MIGRATIONS[v](db);
+        db.run(`PRAGMA user_version = ${v + 1}`);
+      })();
+    }
+  }
+  const rec = makeRecorder(db);
+
   const write = db.prepare(
     `INSERT INTO items (id, text, ts, at, removed, origin, edited_at, deleted, seq)
      VALUES ($id, $text, $ts, $at, $removed, $origin, NULL, COALESCE($deleted, 0), ${NEXT_SEQ})
@@ -141,6 +176,11 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
   const record = db.prepare(
     "INSERT INTO events (ts, at, op, id, text, detail) VALUES ($ts, $at, $op, $id, $text, $detail)",
   );
+  // Every event is also written as the action(s) that record it. The events table stays as it was (dual write).
+  const emit = (op: LogEvent["op"], id: string, text: string, ts: number, at: number, detail: string | null, origin: string | null = null) => {
+    record.run({ $ts: ts, $at: at, $op: op, $id: id, $text: text, $detail: detail });
+    rec.fromEvent(op, id, text, ts, at, detail, { origin, mkId: rec.newId });
+  };
   const events = db.prepare("SELECT n, ts, at, op, id, text, detail FROM events ORDER BY n ASC");
   const later = db.prepare("SELECT id, text, ts, at, removed, seq, origin, edited_at, deleted FROM items WHERE seq > $seq ORDER BY seq ASC");
   const maxSeq = db.prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM items");
@@ -196,12 +236,12 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
     }
     const edited = Object.keys(diff).length > 0;
     const saved = toItem(write.get({ $id: id, $text: text, $ts: ts, $at: itemAt, $removed: removed ? 1 : 0, $origin: origin, $editedAt: edited ? now : null, $deleted: deleted === null ? null : deleted ? 1 : 0 }) as Row);
-    for (const [op, when] of changes) record.run({ $ts: now, $at: when, $op: op, $id: id, $text: text, $detail: null });
-    if (edited) record.run({ $ts: now, $at: now, $op: "edit", $id: id, $text: text, $detail: JSON.stringify(diff) });
+    for (const [op, when] of changes) emit(op, id, text, now, when, null, op === "push" ? saved.origin ?? null : null);
+    if (edited) emit("edit", id, text, now, now, JSON.stringify(diff));
     // Deleting and undoing are logged when the flag really changes; the events before them stay as they were.
     const wasDeleted = before?.deleted === 1;
-    if (!wasDeleted && saved.deleted) record.run({ $ts: now, $at: now, $op: "delete", $id: id, $text: text, $detail: null });
-    if (wasDeleted && !saved.deleted) record.run({ $ts: now, $at: now, $op: "undelete", $id: id, $text: text, $detail: null });
+    if (!wasDeleted && saved.deleted) emit("delete", id, text, now, now, null);
+    if (wasDeleted && !saved.deleted) emit("undelete", id, text, now, now, null);
     return saved;
   });
 
@@ -249,7 +289,7 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
     const saved = toQueueItem(
       writeQueue.get({ $id: id, $text: text, $ts: ts, $at: itemAt, $removed: removed ? 1 : 0, $started: keepStarted ? 1 : 0 }) as QueueRow,
     );
-    for (const [op, when] of changes) record.run({ $ts: now, $at: when, $op: op, $id: id, $text: text, $detail: null });
+    for (const [op, when] of changes) emit(op, id, text, now, when, null);
     return saved;
   });
 
@@ -279,11 +319,11 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
     }
     const edited = Object.keys(diff).length > 0;
     const saved = toNote(writeNote.get({ $id: id, $text: text, $ts: ts, $removed: removed ? 1 : 0, $editedAt: edited ? now : null }) as NoteRow);
-    if (!before) record.run({ $ts: now, $at: ts, $op: "note", $id: id, $text: text, $detail: null });
-    if (edited) record.run({ $ts: now, $at: now, $op: "edit", $id: id, $text: text, $detail: JSON.stringify(diff) });
+    if (!before) emit("note", id, text, now, ts, null);
+    if (edited) emit("edit", id, text, now, now, JSON.stringify(diff));
     // A removed note is a deleted one: logged as `delete`, and `undelete` when it comes back.
-    if (before && before.removed === 0 && removed) record.run({ $ts: now, $at: now, $op: "delete", $id: id, $text: text, $detail: null });
-    if (before && before.removed === 1 && !removed) record.run({ $ts: now, $at: now, $op: "undelete", $id: id, $text: text, $detail: null });
+    if (before && before.removed === 0 && removed) emit("delete", id, text, now, now, null);
+    if (before && before.removed === 1 && !removed) emit("undelete", id, text, now, now, null);
     return saved;
   });
 
@@ -378,6 +418,12 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
         if (e.detail === null) delete (e as { detail?: unknown }).detail;
         return e as LogEvent;
       });
+    },
+    actions() {
+      return (db.prepare("SELECT n, id, ts, at, kind, target, ref, data, origin FROM actions ORDER BY n ASC").all() as Parameters<typeof toAction>[0][]).map(toAction);
+    },
+    state() {
+      return reduce(store.actions());
     },
     close() {
       db.close();

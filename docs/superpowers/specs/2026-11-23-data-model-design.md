@@ -221,6 +221,20 @@ additive (new tables only) so older code still opens the database; it would see 
 acceptable degraded mode for a fallback. If that is not acceptable, the new code can keep writing the legacy columns
 for one release (cost: a second write path). This is a decision (6 below).
 
+### Step 1: status
+
+Built on this branch: the `actions` table; migration 1 (numbered, `PRAGMA user_version`; a `.pre-actions` copy of the
+database is taken first) converting the existing rows and events into actions, with rows older than the event log
+marked `synth`; the shared reducer `web/reduce.js` (items with intervals, notes, the Later queue); `store.state()` and
+`store.actions()`; and every write now also appends the actions that record it. A legacy `restore` becomes a `void` of the
+pop, as decision 5 says.
+
+Deliberately staged, to keep the live app safe while the model lands: the old row tables are still written and still
+serve the current clients (so a fallback to older code stays current and decision 6's stale view does not arise until
+step 4); `events` is still written alongside the actions; and the reducer's state is computed on demand from the log
+rather than kept in projection tables (nothing reads it until step 3's endpoints). The next steps are 2 (client journal
+and wire v2) and 3 (read endpoints).
+
 ### Steps (each a PR, stacked)
 
 1. **Reducer and log, server side.** `actions` table, shared `reduce.js`, projections, rebuild function, numbered
