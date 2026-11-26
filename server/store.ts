@@ -96,6 +96,8 @@ export interface Store {
    * keeps the old row tables in step so the old wire still serves the same data, and returns every action above `cursor`.
    */
   syncActions(cursor: number, input: unknown[]): ActionsSyncResult;
+  /** The highest `n` in the actions log: the cursor of the actions wire. */
+  actionsCursor(): number;
   /** The append-only log of actions (the source of truth for the new model), oldest first. */
   actions(): Action[];
   /** The state the reducer (web/reduce.js) derives from the whole log: items with their intervals, notes, the Later queue. */
@@ -517,6 +519,9 @@ export function openStore(path: string, opts: { now?: () => number } = {}): Stor
         if (e.detail === null) delete (e as { detail?: unknown }).detail;
         return e as LogEvent;
       });
+    },
+    actionsCursor() {
+      return (maxN.get() as { n: number }).n;
     },
     actions() {
       return (db.prepare("SELECT n, id, ts, at, kind, target, ref, data, origin FROM actions ORDER BY n ASC").all() as Parameters<typeof toAction>[0][]).map(toAction);

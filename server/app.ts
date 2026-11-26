@@ -3,6 +3,7 @@ import { ValidationError, type Store } from "./store";
 import { webVersion } from "./webversion";
 import { reportedBase } from "./gitver";
 import type { UpdateState } from "./updatecheck";
+import { itemRows, noteRows, parseRowId, queueRows } from "../web/rows.js";
 
 const MAX_BODY = 4096;
 // One sync request carries every pending change of a device, so it may be larger than a single-row write.
@@ -51,7 +52,8 @@ export function createApp(
 
   // Route labels come from a fixed set so a scanner hitting random paths cannot grow the metric series.
   function routeLabel(pathname: string): string {
-    if (pathname === "/healthz" || pathname === "/login" || pathname === "/metrics" || pathname === "/api/events" || pathname === "/api/items" || pathname === "/api/queue" || pathname === "/api/sync" || pathname === "/api/version" || pathname === "/api/update-check" || pathname === "/api/update") return pathname;
+    if (pathname === "/healthz" || pathname === "/login" || pathname === "/metrics" || pathname === "/api/events" || pathname === "/api/items" || pathname === "/api/queue" || pathname === "/api/sync" || pathname === "/api/state" || pathname === "/api/day" || pathname === "/api/version" || pathname === "/api/update-check" || pathname === "/api/update") return pathname;
+    if (/^\/api\/items\/[^/]+\/history$/.test(pathname)) return "/api/items/:id/history";
     if (/^\/api\/items\/[^/]+$/.test(pathname)) return "/api/items/:id";
     if (/^\/api\/queue\/[^/]+$/.test(pathname)) return "/api/queue/:id";
     return pathname.startsWith("/api/") ? "/api/other" : "static";
@@ -167,6 +169,45 @@ export function createApp(
     }
   }
 
+  // Current state and a day's activity, derived from the actions log. Days are the client's: `from` and `to` (ms, [from, to)),
+  // so the server needs no time zone. `/api/state` adds the stack and the Later pile; both give the stays that ended in the
+  // window, the notes in it, and the other stays that overlap (needed for time on top). One stay is one row.
+  function readState(url: URL, full: boolean): Response {
+    const num = (k: string, d: number) => {
+      const v = url.searchParams.get(k);
+      if (v === null || v === "") return d;
+      const n = Number(v);
+      return Number.isSafeInteger(n) ? n : NaN;
+    };
+    const from = num("from", 0);
+    const to = num("to", Number.MAX_SAFE_INTEGER);
+    if (Number.isNaN(from) || Number.isNaN(to)) return json({ error: "from and to must be whole numbers (ms)" }, 400);
+    const cursor = store.actionsCursor();
+    const st = store.state() as any;
+    const rows = (itemRows(st) as any[]).filter((r) => !r.deleted);
+    const newest = (a: any, b: any) => b.ts - a.ts || (a.id < b.id ? 1 : -1);
+    const done = rows.filter((r) => r.removed && r.at >= from && r.at < to).sort((a, b) => b.at - a.at);
+    const earliest = done.reduce((m, r) => Math.min(m, r.ts), Number.POSITIVE_INFINITY);
+    const shown = new Set(done.map((r) => r.id));
+    const stack = rows.filter((r) => !r.removed).sort(newest);
+    const context = rows.filter((r) => !shown.has(r.id) && r.ts < to && (!r.removed || r.at > earliest)).sort(newest);
+    const notes = (noteRows(st) as any[]).filter((n) => !n.removed && n.ts >= from && n.ts < to).sort(newest);
+    const out: Record<string, unknown> = { epoch: store.epoch, cursor, now: Date.now() };
+    if (full) {
+      out.stack = stack;
+      out.later = (queueRows(st) as any[]).filter((q) => !q.removed).sort(newest);
+    } else out.pushed = rows.filter((r) => r.ts >= from && r.ts < to).sort(newest);
+    return json({ ...out, done, notes, context: full ? context.filter((r) => r.removed) : context });
+  }
+
+  // Every action that touched one item (or note, or Later row), oldest first: what happened to it and when it was said and received.
+  function history(id: string): Response {
+    const target = parseRowId(id).itemId;
+    const actions = store.actions().filter((a) => a.target === target);
+    if (!actions.length) return json({ error: "not found" }, 404);
+    return json({ id: target, epoch: store.epoch, actions });
+  }
+
   // The one sync call: apply this device's pending changes to every table, answer with everything above its cursor.
   async function postSync(req: Request): Promise<Response> {
     const body = await readBody(req, MAX_SYNC_BODY);
@@ -245,6 +286,9 @@ export function createApp(
       return new Response(metricsText(), { headers: { "content-type": "text/plain; version=0.0.4; charset=utf-8" } });
     }
     if (pathname === "/api/events" && req.method === "GET") return events();
+    if ((pathname === "/api/state" || pathname === "/api/day") && req.method === "GET") return readState(url, pathname === "/api/state");
+    const hm = pathname.match(/^\/api\/items\/([^/]+)\/history$/);
+    if (hm && req.method === "GET") return history(decodeURIComponent(hm[1]));
     if (pathname === "/api/sync" && req.method === "POST") return postSync(req);
     if (pathname === "/api/items" && req.method === "GET") {
       const n = Number(url.searchParams.get("since"));
