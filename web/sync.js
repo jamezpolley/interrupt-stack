@@ -135,7 +135,7 @@ export function createSync({ storage, fetch, now = () => Date.now(), online = ()
       const made = [];
       const text = typeof fields.text === "string" ? fields.text.trim() : "";
       if (text && text.length <= MAX_TEXT && text !== r.text) made.push({ kind: "edit", target: r.itemId, data: { text } });
-      if (Number.isFinite(fields.ts) && fields.ts >= 0 && fields.ts !== r.ts && r.removed) made.push({ kind: "edit", target: r.itemId, ref: r.startAction, data: { at: fields.ts } });
+      if (Number.isFinite(fields.ts) && fields.ts >= 0 && fields.ts !== r.ts) made.push({ kind: "edit", target: r.itemId, ref: r.startAction, data: { at: fields.ts } });
       if (Number.isFinite(fields.at) && fields.at >= 0 && fields.at !== r.at && r.removed) made.push({ kind: "edit", target: r.itemId, ref: r.endAction, data: { at: fields.at } });
       if (!made.length) return null;
       await journal.append(made);
