@@ -6,7 +6,6 @@ export function formatFailure(f) {
   lines.push(`navigator.onLine: ${f.online}`);
   if (f.error) {
     lines.push(`Error: ${f.error.name}: ${f.error.message}`);
-    lines.push("No response was received. The browser reports a refused connection, a dropped one, a blocked cross-origin redirect and an unreachable host all the same way.");
   }
   const r = f.response;
   if (r) {
