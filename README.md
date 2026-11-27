@@ -1,5 +1,7 @@
 # interrupt-stack
 
+> **Note:** As the commit history shows, this entire project is AI slop. Do not assume it is useful for anything.
+
 A push/pop stack of what you're working on. Push a task when you start it; pop it when you're done and see what you were doing before. It's an installable web app (PWA) with a small self-hosted sync server, so the same stack follows you across a laptop, phone and tablet. It works offline and catches up when the connection returns.
 
 ## Run it
