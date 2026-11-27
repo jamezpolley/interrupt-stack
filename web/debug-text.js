@@ -13,7 +13,6 @@ export function formatFailure(f) {
     lines.push(`type: ${r.type}`);
     lines.push(`redirected: ${r.redirected}`);
     lines.push(`url: ${r.url}`);
-    if (r.type === "opaqueredirect") lines.push("The server answered with a redirect. The browser hides the location, status, headers and body of a redirect the app did not follow.");
     if (r.headers.length) lines.push("Headers:", ...r.headers.map(([k, v]) => `  ${k}: ${v}`));
     if (r.body != null && r.body !== "") {
       let body = r.body;
