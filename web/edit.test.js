@@ -194,3 +194,10 @@ describe("an inverted entry can be opened and repaired", () => {
     expect(validateDraft([X], { times: { "X:at": m(10, 40) } }, NOW).join()).toMatch(/end before it started/);
   });
 });
+
+describe("an item still on the stack", () => {
+  const L = item("L", m(9), null, false);
+  test("rowTargets maps its one row to its own push time (the Details card opens it)", () => {
+    expect(rowTargets(L, [L])).toEqual([{ id: "L", field: "ts" }]);
+  });
+});
