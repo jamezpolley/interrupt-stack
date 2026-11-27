@@ -48,7 +48,7 @@ export function validateDraft(all, draft, now) {
     const it = byId.get(id);
     if (!it) continue;
     if (!ok(ms)) problems.push("That time is not valid.");
-    else if (!it.removed && field === "at") problems.push(`"${it.text}" is still on the stack, so it has no end time to change.`);
+    else if (!it.removed && field === "at") problems.push(`"${it.text}" has not ended yet.`);
     else if (ms > now) problems.push("A time cannot be in the future.");
     else if (ms < 0) problems.push("That time is not valid.");
   }

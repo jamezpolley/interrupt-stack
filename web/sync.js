@@ -126,7 +126,7 @@ export function createSync({ storage, fetch, now = () => Date.now(), online = ()
 
     /**
      * Corrects an item: `fields` may hold text, ts (when this stay started) and at (when it ended). Anything not valid is
-     * ignored; a stay that has not ended has no end to correct. Each correction is an action that points at the action it
+     * ignored, and so is `at` for a stay that has not ended. Each correction is an action that points at the action it
      * corrects, so what was first reported stays in the log. Returns the row, or null when nothing changed.
      */
     async edit(id, fields = {}) {

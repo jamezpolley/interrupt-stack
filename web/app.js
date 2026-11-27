@@ -447,7 +447,8 @@ function showPane(id) {
   $(id).scrollIntoView({ behavior: reduce ? "auto" : "smooth", inline: "start", block: "nearest" });
 }
 
-// The details panel for a Done today row: every push and pop of that item, with running totals (derived on this device).
+// The details panel for a Done today row or an item on the stack: every push and pop of that item, with running totals
+// (derived on this device).
 // Edit mode (the Edit button) changes the item's title and the times of the rows, with the totals recomputing as you
 // type; Save sends the whole change, Cancel drops it. `ed` is null when not editing.
 let detailsFor_id = null;

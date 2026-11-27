@@ -96,7 +96,7 @@ export function timelineOrBasic(x, items) {
 
 /**
  * What the details card shows for an item that is still on the stack: when it was pushed, and nothing else yet (it has
- * no end, so there are no totals and nothing about it can be corrected except its title). Null if it is not live.
+ * not ended, so there are no totals). Null if it is not live.
  */
 export function liveTimeline(x) {
   if (!x || x.removed || !ok(x.ts)) return null;
@@ -188,7 +188,7 @@ export function wasEdited(item, all) {
 
 /**
  * The details panel for a Done today item: the title (its text), a summary line, and the timeline as display strings.
- * Null when there is nothing real to show (no end time). The last row's On top is the Done today row's duration,
+ * Null for an item still on the stack or with junk times. The last row's On top is the Done today row's duration,
  * because both come from the same derivation.
  */
 export function detailsFor(item, all, nowMs, locale) {

@@ -37,9 +37,9 @@ describe("validateDraft", () => {
   test("future time", () => {
     expect(validateDraft(all, { times: { "A:at": NOW + 60000 } }, NOW).join()).toMatch(/future/);
   });
-  test("the end time of a live item cannot change", () => {
+  test("a draft that gives an item still on the stack an end time is refused", () => {
     const live = item("L", m(9, 15), m(9, 15), false);
-    expect(validateDraft([...all, live], { times: { "L:at": m(9, 16) } }, NOW).join()).toMatch(/still on the stack/);
+    expect(validateDraft([...all, live], { times: { "L:at": m(9, 16) } }, NOW).join()).toMatch(/has not ended/);
   });
   test("empty and over-long text", () => {
     expect(validateDraft(all, { texts: { A: "  " } }, NOW).join()).toMatch(/empty/);
@@ -204,7 +204,7 @@ describe("an item still on the stack", () => {
 
 describe("editing the push time of an item still on the stack", () => {
   const L = item("L", m(9), null, false);
-  test("its push time can change, its end cannot", () => {
+  test("its push time can be edited; a draft giving it an end time is refused", () => {
     expect(validateDraft([L], { texts: {}, times: { "L:ts": m(8) } }, m(12))).toEqual([]);
     expect(validateDraft([L], { texts: {}, times: { "L:at": m(10) } }, m(12)).length).toBe(1);
   });
