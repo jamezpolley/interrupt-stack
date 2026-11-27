@@ -27,10 +27,10 @@ describe("formatFailure", () => {
     expect(t).toContain('{\n  "a": 1\n}');
   });
 
-  test("an opaque redirect explains what the browser hides", () => {
+  test("an opaque redirect shows its type and no explanation", () => {
     const t = formatFailure({ ...base, response: { status: 0, statusText: "", type: "opaqueredirect", redirected: false, url: "", headers: [], body: null } });
     expect(t).toContain("opaqueredirect");
-    expect(t).toMatch(/hides the location/i);
+    expect(t).not.toMatch(/hides the location/i);
   });
 
   test("truncation is mentioned", () => {
