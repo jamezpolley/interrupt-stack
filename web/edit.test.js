@@ -37,9 +37,9 @@ describe("validateDraft", () => {
   test("future time", () => {
     expect(validateDraft(all, { times: { "A:at": NOW + 60000 } }, NOW).join()).toMatch(/future/);
   });
-  test("times of a live item cannot change", () => {
+  test("the end time of a live item cannot change", () => {
     const live = item("L", m(9, 15), m(9, 15), false);
-    expect(validateDraft([...all, live], { times: { "L:ts": m(9, 16) } }, NOW).join()).toMatch(/still on the stack/);
+    expect(validateDraft([...all, live], { times: { "L:at": m(9, 16) } }, NOW).join()).toMatch(/still on the stack/);
   });
   test("empty and over-long text", () => {
     expect(validateDraft(all, { texts: { A: "  " } }, NOW).join()).toMatch(/empty/);
@@ -199,5 +199,16 @@ describe("an item still on the stack", () => {
   const L = item("L", m(9), null, false);
   test("rowTargets maps its one row to its own push time (the Details card opens it)", () => {
     expect(rowTargets(L, [L])).toEqual([{ id: "L", field: "ts" }]);
+  });
+});
+
+describe("editing the push time of an item still on the stack", () => {
+  const L = item("L", m(9), null, false);
+  test("its push time can change, its end cannot", () => {
+    expect(validateDraft([L], { texts: {}, times: { "L:ts": m(8) } }, m(12))).toEqual([]);
+    expect(validateDraft([L], { texts: {}, times: { "L:at": m(10) } }, m(12)).length).toBe(1);
+  });
+  test("changesFrom sends the new push time", () => {
+    expect(changesFrom([L], { texts: {}, times: { "L:ts": m(8) } })).toEqual([{ id: "L", ts: m(8) }]);
   });
 });

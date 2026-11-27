@@ -532,7 +532,7 @@ function renderDetails() {
     const tr = document.createElement("tr");
     const tdT = document.createElement("td");
     tdT.className = "t";
-    if (ed && owner?.removed && isOwnRow(x, tg)) {
+    if (ed && (owner?.removed || tg.field === "ts") && isOwnRow(x, tg)) {
       const orig = owner[tg.field];
       const clock = document.createElement("input");
       clock.className = "clock";

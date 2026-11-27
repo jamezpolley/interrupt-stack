@@ -220,11 +220,12 @@ describe("the journal and the stack over it", () => {
     expect(served(w)[0]).toMatchObject({ text: "new", first: { start: { at: done.ts - 1000 } } });
   });
 
-  test("an item on the stack can have its title changed, but not its times", async () => {
+  test("an item on the stack can have its title and push time changed, but not an end time", async () => {
     const w = world();
     const a = await started(w.mkClient());
     const p = await a.sync.push("old");
-    expect(await a.sync.edit(p.id, { ts: 5 })).toBeNull();
+    expect(await a.sync.edit(p.id, { at: 5 })).toBeNull();
+    expect((await a.sync.edit(p.id, { ts: p.ts - 60_000 })).ts).toBe(p.ts - 60_000);
     expect((await a.sync.edit(p.id, { text: "new" })).text).toBe("new");
   });
 
