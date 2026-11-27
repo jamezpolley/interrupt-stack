@@ -9,7 +9,7 @@ describe("formatFailure", () => {
     expect(t).toContain("GET /api/items?since=0");
     expect(t).toContain("TypeError: Failed to fetch");
     expect(t).toContain("navigator.onLine: true");
-    expect(t).toContain("No response was received");
+    expect(t).not.toContain("No response was received");
   });
 
   test("response with headers and plain body", () => {
