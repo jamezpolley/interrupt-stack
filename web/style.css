@@ -191,6 +191,10 @@ table.timeline{border-collapse:collapse;width:100%;font-size:.8125rem}
 .timeline th.n{text-align:right}
 .timeline .t{font-family:var(--font-mono);font-size:.75rem;white-space:nowrap}
 .timeline .w{overflow-wrap:anywhere}
+/* While editing, the totals are not needed: the table keeps a width in which the item names can be read, and the On top and
+   Wall columns scroll off to the right (the area around it scrolls sideways) instead of squeezing the names. */
+.details.editing table.timeline{min-width:35rem}
+.details.editing .timeline .w{min-width:15rem}
 #debug-text{
   margin:0;overflow:auto;min-height:0;flex:1;
   font-family:var(--font-mono);font-size:.75rem;line-height:1.4;white-space:pre-wrap;overflow-wrap:anywhere;
