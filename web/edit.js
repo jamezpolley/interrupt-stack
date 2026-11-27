@@ -1,5 +1,5 @@
 // PROTOTYPE: editing the text and times shown in the details panel. Pure logic, no DOM.
-import { timeOnTop, timelineOrBasic, formatDuration } from "./times.js";
+import { timeOnTop, timelineOrBasic, detailsTimeline, formatDuration } from "./times.js";
 
 export const MAX_TEXT = 200;
 const ok = (n) => typeof n === "number" && Number.isFinite(n);
@@ -9,7 +9,7 @@ const ok = (n) => typeof n === "number" && Number.isFinite(n);
  * item's push time, "Back on top" is the ended item's end time, the last row is the item's own end time.
  */
 export function rowTargets(x, all) {
-  const t = timelineOrBasic(x, all);
+  const t = detailsTimeline(x, all);
   if (!t) return null;
   return t.rows.map((r) => {
     if (r.kind === "pushed") return { id: x.id, field: "ts" };
